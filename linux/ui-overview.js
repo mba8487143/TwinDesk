@@ -301,6 +301,7 @@ UI.tab({
       const all = [
         ...(s.paired ? [{ id: s.paired.macId, name: s.paired.macName, os: s.paired.os, hint: s.paired.address, forget: () => api.forget(), connect: () => api.connectAgain() }] : []),
         ...s.guests.map((g) => ({ id: g.id, name: g.name, os: g.os, hint: g.lastSeen ? t('Last seen {time}', { time: UI.ago(g.lastSeen) }) : '', forget: () => api.forgetGuest(g.id),
+          askAgain: g.always ? () => api.setAlways({ id: g.id, on: false }) : null, // Always allowed through the relay: take it back
           connect: near.has(g.id) ? () => api.connectGuest(g.id) : null })),
       ];
       pairedList.replaceChildren(...(all.length ? all.map((x) => {
@@ -314,6 +315,7 @@ UI.tab({
           wakeBtn,
           // Switch to it: whatever the session is now, it ends (paired, and nearby to be reached).
           !online && x.connect ? UI.button(live ? t('Switch') : t('Connect'), x.connect, 'small') : null,
+          x.askAgain ? UI.button(t('Ask again'), x.askAgain, 'small') : null,
           UI.button(t('Forget'), x.forget, 'small'),
         ], { literal: true });
         r.querySelector('.text').prepend(UI.osIcon(x.os));

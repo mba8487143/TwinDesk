@@ -11,6 +11,8 @@ TwinDesk connects devices on the same network, over a USB cable, over Bluetooth,
 
 ## Run it
 
+Update the relay too when you update TwinDesk: copy the new `relay/twindesk-relay.js` to the server and restart it. This one fixes a bug where, with several connections at once, a connection that was still waiting could be dropped.
+
 You need Node 16 or later on a machine that both devices can reach, for example a small cloud server, or a home server with a forwarded port.
 
 ```
@@ -50,6 +52,18 @@ What keeps it safe:
 A computer paired this way has no network address saved. It always connects through the relay until it's seen on the same network, then it moves there as usual.
 
 A Mac pairs by ID with another Mac, and a Windows or Linux computer with any computer. To connect a Mac to a PC, type the Mac's ID on the PC.
+
+## Attended and unattended access
+
+A paired computer that connects **through the relay** (from outside the network) waits until someone at the computer it connects to allows it, the way AnyDesk asks. On the same network nothing changes, and phones aren't asked.
+
+- The prompt shows who is asking, with **Allow**, **Always allow** and **Deny**.
+- **Allow** lets it in for that session. If the session drops, it can come back within five minutes without asking again; after that it asks again.
+- **Always allow** makes it unattended: it connects without asking, for example to your own computer at home. Under **Paired**, **Ask again** takes that back.
+- **Deny**, or no answer within a minute: the other computer is told, and it doesn't keep trying by itself until someone presses **Connect** there.
+- A computer that was just paired through the relay isn't asked again for that first session.
+
+For full remote control without anyone there, also turn on what you want the other computer to use. For example, let it start and switch this screen (Display) and accept its mouse and keyboard.
 
 ## Through the relay between computers
 

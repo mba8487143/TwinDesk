@@ -84,6 +84,7 @@
       PAIR_CANCEL: 'pair.cancel',
       // session
       HELLO: 'hello', // + {rc:1, resume:'0'} is a non-takeover reclaim (shared/reclaim.js); plain hello still takes a phone's session
+      HELLO_WAIT: 'hello.wait', // host->computer {ms}: through the host's relay, it asks its user first (shared/relayaccess.js); keep waiting this long for welcome or an error
       WELCOME: 'welcome',
       ERROR: 'error',
       PING: 'ping',

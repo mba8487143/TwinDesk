@@ -263,9 +263,23 @@
     const g = s.guest && s.guest.pairing;
     // This Mac asked a phone to pair: it goes on there (Cancel only hides this).
     const inv = !p && !g && s.connect && s.connect.inviting && !(s.client && s.client.id === s.connect.inviting.id) ? s.connect.inviting : null;
-    bannerMode = p ? 'host' : g ? 'guest' : inv ? 'guest' : null;
+    // A paired computer through our relay waits to be allowed (shared/relayaccess.js).
+    const acc = !p && !g && !inv ? s.access : null;
+    bannerMode = p ? 'host' : g ? 'guest' : inv ? 'guest' : acc ? 'access' : null;
     $('banner').hidden = !bannerMode;
+    $('pair-always').hidden = bannerMode !== 'access';
     if (!bannerMode) return;
+    if (acc) {
+      title('{name} wants to connect through your relay', acc.name);
+      $('pair-code').hidden = $('pair-code-label').hidden = true;
+      $('pair-allow').hidden = false;
+      $('pair-allow').disabled = false;
+      $('pair-allow').textContent = tr('Allow');
+      $('pair-always').textContent = tr('Always allow');
+      $('pair-deny').textContent = tr('Deny');
+      $('pair-hint').textContent = tr('From outside this network. Allow lets it in this time; Always allow lets it connect without asking, as when nobody is here.');
+      return;
+    }
     if (inv) {
       title('Press Pair on {name}', inv.name);
       $('pair-code').hidden = $('pair-code-label').hidden = true;
@@ -361,8 +375,9 @@
     if (current) renderPage(current, s);
   }
 
-  $('pair-allow').onclick = () => (bannerMode === 'guest' ? api.confirmGuestCode() : api.pairRespond(true));
-  $('pair-deny').onclick = () => (bannerMode === 'guest' ? api.cancelGuestPair() : api.pairRespond(false));
+  $('pair-allow').onclick = () => (bannerMode === 'access' ? api.accessRespond('once') : bannerMode === 'guest' ? api.confirmGuestCode() : api.pairRespond(true));
+  $('pair-deny').onclick = () => (bannerMode === 'access' ? api.accessRespond('deny') : bannerMode === 'guest' ? api.cancelGuestPair() : api.pairRespond(false));
+  $('pair-always').onclick = () => bannerMode === 'access' && api.accessRespond('always');
   PairPop.attach($('banner'), $('pair-allow')); // the popup over the window, Allow there presses this one
   window.addEventListener('macshare-go', (e) => show(e.detail, true));
   if (api.onGo) api.onGo((tab) => typeof tab === 'string' && views.has(ALIAS[tab] || tab) && show(tab, true));

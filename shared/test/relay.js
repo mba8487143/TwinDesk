@@ -65,6 +65,34 @@ function client(id, key, send) {
 
     host.stop();
     stub.close();
+
+    // A joiner that was taken, then closes, must not drop one that's waiting now (it once removed
+    // the id's whole waiting list, so the computer's take of the new one got "no").
+    {
+      const rid = R.idOf('waiting-list');
+      const rawLine = (sock) => new Promise((resolve) => { let b = ''; const on = (d) => { b += d; const i = b.indexOf('\n'); if (i >= 0) { sock.removeListener('data', on); resolve(b.slice(0, i)); } }; sock.on('data', on); });
+      const dial = () => new Promise((resolve) => { const sck = net.connect({ host: '127.0.0.1', port: PORT }, () => resolve(sck)); sck.on('error', () => {}); });
+      const ctl = await dial();
+      ctl.write(`TDR1 host ${rid} ${KEY}\n`);
+      assert.strictEqual(await rawLine(ctl), 'ok');
+      const calls = [];
+      ctl.on('data', (d) => String(d).split('\n').forEach((l) => { const m = /^call (\d+)$/.exec(l.trim()); if (m) calls.push(m[1]); }));
+      const take = async (n) => { const t = await dial(); t.write(`TDR1 take ${rid} ${n} ${KEY}\n`); return { t, line: await rawLine(t) }; };
+      const j1 = await dial();
+      j1.write(`TDR1 join ${rid} ${KEY}\n`);
+      await new Promise((r) => { const w = () => (calls.length >= 1 ? r() : setTimeout(w, 5)); w(); });
+      const t1 = await take(calls[0]);
+      assert.strictEqual(t1.line, 'ok');
+      const j2 = await dial();
+      j2.write(`TDR1 join ${rid} ${KEY}\n`);
+      await new Promise((r) => { const w = () => (calls.length >= 2 ? r() : setTimeout(w, 5)); w(); });
+      j1.destroy(); // the first one ends while the second waits
+      t1.t.destroy();
+      await new Promise((r) => setTimeout(r, 100));
+      const t2 = await take(calls[1]);
+      assert.strictEqual(t2.line, 'ok', 'the second joiner is still there to take');
+      for (const x of [ctl, j2, t2.t]) x.destroy();
+    }
     console.log('relay: ok');
   } finally {
     relay.kill();

@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('macshare', {
   connectAgain: call('connectAgain'),
   connectGuest: call('connectGuest'),
   respondPair: call('respondPair'),
+  respondAccess: call('respondAccess'),
+  setAlways: call('setAlways'),
   forgetGuest: call('forgetGuest'),
   wakePeer: call('wakePeer'),
   setWake: call('setWake'),

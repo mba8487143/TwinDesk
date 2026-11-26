@@ -162,6 +162,14 @@ function setupIpc(ctx) {
     connectAgain() {
       ctx.link.connect(true);
     },
+    // A computer through our relay waiting to be allowed: 'once' | 'always' | 'deny' (shared/relayaccess.js).
+    accessRespond(choice) {
+      if (typeof choice === 'string' && ctx.pairing && ctx.pairing.respondAccess) ctx.pairing.respondAccess(choice);
+    },
+    // Paired › a computer's Always allow through the relay (off: Ask again).
+    setAlways(arg) {
+      if (arg && typeof arg.id === 'string' && ctx.pairing && ctx.pairing.setAlways) ctx.pairing.setAlways(arg.id, arg.on === true);
+    },
     setPhone(partial) {
       setGroup('phone', partial);
       if (partial && 'input' in partial) ctx.phone.bridge.tellVia();
