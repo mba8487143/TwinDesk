@@ -289,6 +289,7 @@
       else if (!p.code) hint = tr('Waiting for the code…');
       else if (p.allowed && !p.confirmed) hint = tr('Allowed. Waiting for “Codes match” on {name}…', { name: other });
       else if (p.confirmed && !p.allowed) hint = tr('{name} confirmed the code. Click Allow if it matches.', { name: other });
+      if (p.relay && p.code && !p.allowed) hint = tr('Through your relay, from outside this network. Allow only if you know who {name} is and it shows the same code.', { name: other });
       $('pair-hint').textContent = hint;
       return;
     }

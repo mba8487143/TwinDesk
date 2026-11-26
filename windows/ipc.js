@@ -53,6 +53,9 @@ function setupIpc(ctx) {
   // Connect by address: ask who is there (unicast probe works where broadcast is blocked); no
   // answer in PROBE_REPLY_MS → try WSS on that address directly ("No TwinDesk at …" if nothing).
   handle('connectAddress', async (text) => {
+    // A TwinDesk ID (nine digits) instead of an address: pair through the relay (shared/relay.js pairTarget).
+    const byId = require('../shared/relay.js').pairTarget(text, settings.net && settings.net.relay, discovery.self && discovery.self.fp);
+    if (byId) return link.startPairing({ macName: byId.name, ...(byId.failed ? { failed: byId.failed } : { relay: byId.relay }) });
     const m = typeof text === 'string' && /^\s*([^\s:]+)(?::(\d{1,5}))?\s*$/.exec(text);
     if (!m) return;
     const d = m[2] ? null : await discovery.ask(m[1]);

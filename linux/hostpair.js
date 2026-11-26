@@ -9,6 +9,7 @@
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const { PairFails } = require('../shared/pairfail.js');
+const Relay = require('../shared/relay.js');
 const { reclaimDecision } = require('../shared/reclaim.js');
 const store = require('./store');
 
@@ -72,7 +73,7 @@ class Pairing extends EventEmitter {
   // What the control window shows about an in-progress request.
   pendingView() {
     const p = this.pending;
-    return p && { name: p.name, os: p.os, code: p.code, confirmed: p.confirmed, allowed: p.allowed, wired: p.wired, qr: p.qr };
+    return p && { name: p.name, os: p.os, code: p.code, confirmed: p.confirmed, allowed: p.allowed, wired: p.wired, qr: p.qr, relay: Relay.viaRelay(p.ctx) }; // relay: through our relay, from outside this network
   }
 
   touch(id) {
@@ -113,8 +114,13 @@ class Pairing extends EventEmitter {
 
     const p = this.pending;
     if (msg.t === P.T.PAIR_START) {
-      if (this.fails.locked(ctx.address)) {
+      if (this.fails.locked(PairFails.who(ctx))) {
         return this.server.fail(ctx, P.E.PAIR_REFUSED, 'Too many failed pairing attempts from this address; wait a few minutes and try again');
+      }
+      // Through this computer's own relay: only while Allow pairing through the relay is on (off by
+      // default): with it off nobody from outside this network gets as far as a code or a prompt.
+      if (Relay.viaRelay(ctx) && !Relay.pairingAllowed()) {
+        return this.server.fail(ctx, P.E.PAIR_REFUSED, 'Pairing through the relay is off on this computer');
       }
       if (this.busy()) return this.server.fail(ctx, P.E.BUSY, 'Connected to another device');
       if (p && p.ctx !== ctx) return this.server.fail(ctx, P.E.BUSY, 'Another pairing is in progress');
@@ -123,7 +129,7 @@ class Pairing extends EventEmitter {
         return this.server.fail(ctx, P.E.VERSION_MISMATCH, `This computer speaks protocol v${P.PROTOCOL_VERSION}`);
       }
       if (typeof msg.id !== 'string' || !msg.id || typeof msg.commit !== 'string' || !HEX(64).test(msg.commit)) {
-        this.fails.fail(ctx.address);
+        this.fails.fail(PairFails.who(ctx));
         return this.server.fail(ctx, P.E.BAD_MESSAGE, 'pair.start needs id and commit');
       }
       const nm = P.randomHex(16);
@@ -169,7 +175,7 @@ class Pairing extends EventEmitter {
         this.emit('change');
         return this._maybeFinish();
       case P.T.PAIR_CANCEL:
-        this.fails.fail(p.ctx.address); // a cancel after an accepted start counts toward the lockout
+        this.fails.fail(PairFails.who(p.ctx)); // a cancel after an accepted start counts toward the lockout
         this._clear();
         ctx.ws.close();
         return;
@@ -186,7 +192,7 @@ class Pairing extends EventEmitter {
     this.paired = this.paired.filter((x) => x.id !== p.id);
     this.paired.push({ id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now });
     this._save();
-    this.fails.clear(p.ctx.address);
+    this.fails.clear(PairFails.who(p.ctx));
     this.server.send(p.ctx, { t: P.T.PAIR_OK, token, macId: this.id.id, macName: this.id.name, os: P.OS.LINUX });
     console.log(`[pairing] paired with ${p.name} (${p.id})`);
     if (p.qr && this.consumeQr) this.consumeQr();
@@ -282,7 +288,7 @@ class Pairing extends EventEmitter {
   _abort(code, message) {
     const p = this.pending;
     if (!p) return;
-    this.fails.fail(p.ctx.address); // a denial, a wrong code, a timeout: all count toward the lockout
+    this.fails.fail(PairFails.who(p.ctx)); // a denial, a wrong code, a timeout: all count toward the lockout
     this._clear();
     this.server.fail(p.ctx, code, message);
   }
@@ -296,7 +302,7 @@ class Pairing extends EventEmitter {
 
   _onClosed(ctx) {
     if (this.pending && this.pending.ctx === ctx) {
-      this.fails.fail(ctx.address); // a socket dropped mid-pairing counts like a cancel
+      this.fails.fail(PairFails.who(ctx)); // a socket dropped mid-pairing counts like a cancel
       this._clear();
     }
     if (ctx.authed && ctx.deviceId) this.touch(ctx.deviceId);

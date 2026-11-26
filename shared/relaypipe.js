@@ -64,6 +64,15 @@ function message(e, name) {
   return name ? m.replace('{Name}', name) : m;
 }
 
+// The same while pairing with a TwinDesk ID (Connect by address): what to check is different then.
+function pairMessage(e) {
+  const code = e instanceof RelayError ? e.code : 'unreachable';
+  if (code === 'absent') return 'No computer with that ID is on your relay. Check the ID, and that Allow pairing through the relay is on there.';
+  if (code === 'key') return 'Your relay’s key is wrong (General › Your own relay).';
+  if (code === 'unreachable' || code === 'timeout') return 'Can’t reach your relay (General › Your own relay).';
+  return message(e);
+}
+
 // One connection through the relay to the host: resolves the socket (paused, spliced by the caller)
 // once the host took it.
 function join(r, { connectMs = CONNECT_MS, joinMs = JOIN_MS } = {}) {
@@ -200,4 +209,4 @@ class RelayPipe {
   }
 }
 
-module.exports = { RelayPipe, RelayError, info, same, join, message, MAX_LIVE, MESSAGES };
+module.exports = { RelayPipe, RelayError, info, same, join, message, pairMessage, MAX_LIVE, MESSAGES };
