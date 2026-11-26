@@ -271,7 +271,21 @@
 
   function renderBanner(s) {
     const inv = !s.pairing && s.inviting;
-    $('banner').hidden = !s.pairing && !inv;
+    // A paired computer through our relay waits to be allowed (shared/relayaccess.js).
+    const acc = !s.pairing && !inv ? s.access : null;
+    $('banner').hidden = !s.pairing && !inv && !acc;
+    $('pair-always').hidden = !acc;
+    if (acc) {
+      $('banner').classList.remove('failed');
+      $('pair-title').textContent = t('{name} wants to connect through your relay', { name: acc.name });
+      $('pair-code-wrap').hidden = true;
+      $('pair-match').hidden = false;
+      $('pair-match').textContent = t('Allow');
+      $('pair-always').textContent = t('Always allow');
+      $('pair-cancel').textContent = t('Deny');
+      $('pair-hint').textContent = t('From outside this network. Allow lets it in this time; Always allow lets it connect without asking, as when nobody is here.');
+      return;
+    }
     if (inv) { // this PC asked a phone to pair: it goes on there
       $('banner').classList.remove('failed');
       $('pair-title').textContent = t('Press Pair on {name}', { name: inv.name });
@@ -347,8 +361,10 @@
     if (current) renderPage(current, s);
   }
 
-  $('pair-match').onclick = () => (UI.state && UI.state.pairing && UI.state.pairing.role === 'host' ? api.respondPair(true) : api.confirmCode());
-  $('pair-cancel').onclick = () => api.cancelPair();
+  const accessAsked = () => !!(UI.state && !UI.state.pairing && !UI.state.inviting && UI.state.access);
+  $('pair-match').onclick = () => (accessAsked() ? api.respondAccess('once') : UI.state && UI.state.pairing && UI.state.pairing.role === 'host' ? api.respondPair(true) : api.confirmCode());
+  $('pair-cancel').onclick = () => (accessAsked() ? api.respondAccess('deny') : api.cancelPair());
+  $('pair-always').onclick = () => accessAsked() && api.respondAccess('always');
   PairPop.attach($('banner'), $('pair-match')); // the popup over the window, Allow there presses this one
   window.addEventListener('macshare-go', (e) => show(e.detail, true));
   api.onGo((tab) => typeof tab === 'string' && views.has(ALIAS[tab] || tab) && show(tab, true));

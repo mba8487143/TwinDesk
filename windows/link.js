@@ -481,6 +481,7 @@ class Link {
       case T.PAIR_OK: return this._onPairOk(msg);
       case T.PAIR_CANCEL: return this._pairFailed('Pairing was cancelled on {name}.');
       case T.WELCOME: return this._onWelcome(msg);
+      case T.HELLO_WAIT: return this._onHelloWait(msg);
       case T.ERROR: return this._onError(msg);
       case T.PING: return this.authed && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: T.PONG, ts: msg.ts }));
       case T.PONG:
@@ -535,6 +536,19 @@ class Link {
     this.mode = 'session';
     this._setStatus('connecting', '');
     this._hello();
+  }
+
+  // Through its relay the host asks its user first (shared/relayaccess.js): wait that long for the
+  // welcome (or its refusal) instead of the usual few seconds.
+  _onHelloWait(msg) {
+    if (this.mode !== 'session' || this.authed) return;
+    clearTimeout(this.timers.hello);
+    const ms = Math.min(Math.max(Number(msg.ms) || 0, 5000), 120000) + 5000;
+    this.timers.hello = setTimeout(() => {
+      this.lastError = 'Nobody answered on {name}';
+      if (this.ws) this.ws.terminate();
+    }, ms);
+    this._setStatus('connecting', 'Waiting for someone on {name} to allow the connection…');
   }
 
   _onWelcome(msg) {

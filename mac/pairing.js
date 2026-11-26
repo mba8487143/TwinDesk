@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const { PairFails } = require('../shared/pairfail.js');
 const Relay = require('../shared/relay.js');
+const { RelayAccess } = require('../shared/relayaccess.js');
 const { reclaimDecision } = require('../shared/reclaim.js');
 const store = require('./store');
 
@@ -26,6 +27,8 @@ class Pairing extends EventEmitter {
     this.paired = store.read('paired.json', []);
     this.pending = null; // {ctx, id, name, commit, nm, nw, code, confirmed, allowed, timer}
     this.fails = new PairFails(); // failed pairings per address: a lockout after too many (#136)
+    // Through our relay, from outside this network: ask here first, unless Always allow (shared/relayaccess.js).
+    this.access = new RelayAccess({ server, save: () => this._save(), changed: () => this.emit('change'), asked: () => this.emit('request'), name: () => this.id.macName || 'This computer' });
     // Positive consent only: missing/unreadable/corrupt state cannot enable an automatic return.
     let saved = null;
     try {
@@ -40,7 +43,7 @@ class Pairing extends EventEmitter {
   }
 
   list() {
-    return this.paired.map(({ id, name, os, pairedAt, lastSeen }) => ({ id, name, os: os || P.OS.WIN, pairedAt, lastSeen }));
+    return this.paired.map(({ id, name, os, pairedAt, lastSeen, relayAccess }) => ({ id, name, os: os || P.OS.WIN, pairedAt, lastSeen, always: relayAccess === 'always' }));
   }
 
   // What the control window shows about an in-progress request.
@@ -85,6 +88,7 @@ class Pairing extends EventEmitter {
   }
 
   forget(id) {
+    this.access.revoke(this.paired.find((x) => x.id === id)); // its Always allow, or a question about it, go too
     this.clearReturn(id);
     // A pairing from it still going would add it straight back when it finishes: it ends here.
     const p = this.pending;
@@ -194,6 +198,8 @@ class Pairing extends EventEmitter {
     this.paired.push({ id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now });
     this._save();
     this.fails.clear(PairFails.who(p.ctx));
+    // Paired through our relay just now: that Allow lets its first session in too (not asked again).
+    if (Relay.viaRelay(p.ctx)) this.access.once.set(p.id, Infinity);
     this.server.send(p.ctx, { t: P.T.PAIR_OK, token, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC });
     console.log(`[pairing] paired with ${p.name} (${p.id})`);
     if (p.qr && this.consumeQr) this.consumeQr();
@@ -211,6 +217,8 @@ class Pairing extends EventEmitter {
     // A phone only says hello when someone asked for it (or to resume): it takes the session.
     // A computer waits while a phone holds it.
     const phone = P.isPhoneOs(Object.values(P.OS).includes(msg.os) ? msg.os : e.os);
+    // Through our relay: a computer waits until someone here allows it (or it's Always allowed).
+    if (!ctx.accessOk && !this.access.ask(ctx, e, phone, () => { ctx.accessOk = true; this._hello(ctx, msg); })) return;
     // Reclaim (#192): the phone's grace window already ended. Authenticate this paired phone only
     // when the session is free. Never yield another session and never end another phone's grace.
     // Busy stays busy. The decision is taken again when authenticate commits (fast files may wait).
@@ -303,7 +311,21 @@ class Pairing extends EventEmitter {
     this.emit('change');
   }
 
+  // Through the relay (shared/relayaccess.js): who waits to be allowed, the answer, and a computer's
+  // Always allow switched (off = Ask again).
+  accessView() { return this.access.view(); }
+  respondAccess(choice) { this.access.respond(choice); }
+  setAlways(id, on) {
+    const e = this.paired.find((x) => x.id === id);
+    if (!e) return;
+    if (!on) return this.access.revoke(e);
+    e.relayAccess = 'always';
+    this._save();
+    this.emit('change');
+  }
+
   _onClosed(ctx) {
+    this.access.closed(ctx);
     if (this.pending && this.pending.ctx === ctx) {
       this.fails.fail(PairFails.who(ctx)); // a socket dropped mid-pairing counts like a cancel
       this._clear();

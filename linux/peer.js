@@ -273,6 +273,7 @@ class Peer {
       pairing: req ? { phase: 'request', role: 'host', macName: req.name, os: req.os, code: req.code || '', allowed: req.allowed, wired: !!req.wired, qr: !!req.qr, relay: !!req.relay, address: '' } : g.pairing,
       paired: g.paired,
       guests: this.pairing ? this.pairing.list() : [],
+      access: this.pairing && this.pairing.accessView ? this.pairing.accessView() : null, // through our relay, waiting to be allowed
       session: c ? { role: 'host', id: c.deviceId, name: c.name, os: c.os || P.OS.WIN }
         : g.link.state === 'connected' && g.paired ? { role: 'guest', id: g.paired.macId, name: g.paired.macName, os: g.paired.os } : null,
       host: { ...this.host },
@@ -307,6 +308,9 @@ class Peer {
   // ---- host side ----
   respondPair(allow) { if (this.pairing) this.pairing.respond(allow); }
   forgetGuest(id) { if (this.pairing) this.pairing.forget(id); }
+  // A computer through our relay waiting to be allowed: 'once' | 'always' | 'deny'; Paired › Ask again.
+  respondAccess(choice) { if (this.pairing && this.pairing.respondAccess) this.pairing.respondAccess(choice); }
+  setAlways(id, on) { if (this.pairing && this.pairing.setAlways) this.pairing.setAlways(id, on); }
 
   _deliver(msg) {
     if (!this._allowed(msg.t)) return;

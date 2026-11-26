@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// TwinDesk Relay: run it on a machine your computer and your phone can both reach (a small cloud
-// server, a home server with a forwarded port), then add its address in TwinDesk on the computer
-// (General › Your own relay). A phone away from the computer's network then connects through it.
+// TwinDesk Relay: run it on a machine your devices can all reach (a small cloud server, a home
+// server with a forwarded port), then add its address in TwinDesk on the computer (General › Your
+// own relay). A phone or another computer away from the computer's network then connects through
+// it (screen, sound and camera too: the computer's TURN rides the same connections).
 //
 // It pairs connections and copies bytes, nothing more. What goes through is TwinDesk's own TLS
 // session (the computer's pinned certificate and the pairing's token), so this relay can't read
@@ -82,7 +83,8 @@ function join(sock, id, rest) {
   if (rest.length) sock.unshift(rest);
   list.set(n, sock);
   waiting.set(id, list);
-  const drop = () => { list.delete(n); if (!list.size) waiting.delete(id); };
+  // Only this list: another join for the id may have started a new one meanwhile (its own waiters).
+  const drop = () => { list.delete(n); if (!list.size && waiting.get(id) === list) waiting.delete(id); };
   const timer = setTimeout(() => { drop(); sock.end('no\n'); }, JOIN_MS);
   sock.once('close', () => { clearTimeout(timer); drop(); });
   sock._relayTimer = timer;
@@ -94,7 +96,7 @@ function take(sock, id, n, rest) {
   const other = list && list.get(n);
   if (!other) return sock.end('no\n');
   list.delete(n);
-  if (!list.size) waiting.delete(id);
+  if (!list.size && waiting.get(id) === list) waiting.delete(id);
   clearTimeout(other._relayTimer);
   sock.write('ok\n');
   other.write('ok\n');

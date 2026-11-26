@@ -204,6 +204,7 @@ function pushState() {
       : /^(utun|bridge|vmnet|vnic|llw|awdl)/.test(i.name) ? 4 : i.name === defaultIf ? 2 : 3);
     state.addresses = interfaces().sort((a, b) => rank(a) - rank(b)).map((i) => i.address);
     state.pairing = pairing ? pairing.pendingView() : null;
+    state.access = pairing && pairing.accessView ? pairing.accessView() : null; // a computer through our relay waiting to be allowed (shared/relayaccess.js)
     if (settings) state.modules = Mods.view(settings.modules, modulesAtStart); // General › Modules
     state.deck = svc && svc.deck ? svc.deck.view() : null; // the Deck page: shown while a device has a Deck
     state.paired = pairing ? pairing.list() : [];

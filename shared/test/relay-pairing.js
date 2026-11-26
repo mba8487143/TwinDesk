@@ -241,6 +241,7 @@ async function scenario(platform) {
     host.pairing.respond(true);
     await until(() => g.connected(), `${platform}: paired and connected through the relay`);
     assert.ok(g.relayed(), `${platform}: the session runs through the relay`);
+    assert.strictEqual(host.pairing.accessView(), null, `${platform}: just paired through the relay: its session isn't asked about again`);
     const saved = g.saved();
     assert.strictEqual(saved.address, '', `${platform}: no address kept for a host met through the relay`);
     assert.strictEqual(saved.fp, FP, `${platform}: its certificate pinned`);

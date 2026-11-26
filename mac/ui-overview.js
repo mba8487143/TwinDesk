@@ -273,6 +273,8 @@ UI.tab({
           const online = c && c.id === x.id;
           const r = UI.row(x.name, online ? tr('Connected') : tr('Last seen {time}', { time: UI.ago(x.lastSeen) }),
             [online ? el('span', { class: 'pill good', text: tr('Online') }) : null,
+              // Always allowed through the relay (unattended): Ask again takes it back (shared/relayaccess.js).
+              x.always ? UI.button(tr('Ask again'), () => api.setAlways({ id: x.id, on: false }), 'small') : null,
               // Wake it over the network (it told us how while connected).
               !online && wk[x.id] ? UI.button(s.wake.last && s.wake.last.id === x.id && Date.now() - s.wake.last.at < 20000 ? tr('Waking…') : tr('Wake'), () => api.wakePeer(x.id), 'small') : null,
               // Switch to it (nearby): whatever the session is now, it ends.

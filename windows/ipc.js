@@ -94,6 +94,8 @@ function setupIpc(ctx) {
     discovery.invite(d.address);
   });
   handle('respondPair', (allow) => link.respondPair(allow === true)); // host: Allow / Deny
+  handle('respondAccess', (choice) => typeof choice === 'string' && link.respondAccess(choice)); // through our relay: Allow / Always allow / Deny
+  handle('setAlways', (arg) => arg && typeof arg.id === 'string' && link.setAlways(arg.id, arg.on === true)); // Paired › Ask again
   handle('forgetGuest', (id) => typeof id === 'string' && link.forgetGuest(id));
   handle('wakePeer', (id) => typeof id === 'string' && wake.wake(id));
   handle('setWake', (on) => wake.set(on === true)); // A switch
