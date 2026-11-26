@@ -3,7 +3,9 @@
 // machine with relay/twindesk-relay.js and shared/relay.js's RelayHost: what a welcome's relay must
 // look like, each way joining can fail, the pipe's port carrying the session and further connections,
 // close() and destroy(), the first connection that nobody uses, the cap, a cancel while opening, and
-// the host's server telling relayed connections from the rest (isRelayed).
+// the host's server telling relayed connections from the rest (isRelayed). What a client says first
+// decides where it goes on the host (TLS to the session's server, STUN to TURN): these start as TLS
+// does, with 0x16, and the echo's answers are compared without it.
 // Run with: node shared/test/relaypipe.js
 'use strict';
 
@@ -38,10 +40,11 @@ function talk(port, send, expect = /echo:/) {
   return new Promise((resolve) => {
     const s = net.connect({ host: '127.0.0.1', port });
     let got = '';
-    s.on('connect', () => s.write(send));
-    s.on('data', (d) => { got += d; if (expect.test(got)) { s.destroy(); resolve(got); } });
-    s.on('close', () => resolve(got));
-    s.on('error', () => resolve(got));
+    s.on('connect', () => s.write(`\x16${send}`));
+    const clean = () => got.replace(/\x16/g, '');
+    s.on('data', (d) => { got += d; if (expect.test(got)) { s.destroy(); resolve(clean()); } });
+    s.on('close', () => resolve(clean()));
+    s.on('error', () => resolve(clean()));
   });
 }
 
@@ -91,7 +94,8 @@ function silent() {
 
     // The "host": an echo server behind RelayHost (as the session's server would be).
     const accepted = [];
-    const echo = net.createServer((s) => { accepted.push(s); s.on('error', () => {}); s.on('data', (d) => s.write(`echo:${d}`)); });
+    // The relay hands its connections over paused (a TLS server takes them from there): this echo resumes.
+    const echo = net.createServer((s) => { accepted.push(s); s.on('error', () => {}); s.on('data', (d) => s.write(`echo:${d}`)); s.resume(); });
     const host = new R.RelayHost({ server: { https: echo }, addr: ADDR, key: KEY, id });
     hosts.push(host);
     const ready = new Promise((r) => host.on('state', (v) => v.state === 'ready' && r()));
@@ -113,9 +117,9 @@ function silent() {
     // close(): a connection open now goes on; new ones are refused.
     const held = net.connect({ host: '127.0.0.1', port: pipe.port });
     let heldGot = '';
-    held.on('data', (d) => { heldGot += d; });
+    held.on('data', (d) => { heldGot += String(d).replace(/\x16/g, ''); });
     held.on('error', () => {});
-    held.write('before');
+    held.write('\x16before');
     await until(() => heldGot === 'echo:before', 'a connection through the pipe');
     pipe.close();
     held.write('after');
@@ -130,7 +134,7 @@ function silent() {
     const idle = await RP.RelayPipe.open(info, { firstMs: 150 });
     await until(() => idle.first === null, 'the unused first connection dropped');
     assert.strictEqual(await talk(idle.port, 'later'), 'echo:later');
-    assert.strictEqual(accepted.length - before, 2, 'the dropped one and the new one: nothing else reached the host');
+    assert.strictEqual(accepted.length - before, 1, 'only the new one reached the host: the dropped one never said a word, so it went nowhere');
     idle.destroy();
 
     // The cap: no more than maxLive local connections at once.
@@ -141,7 +145,7 @@ function silent() {
       s.on('error', () => {});
       let got = '';
       s.on('data', (d) => { got += d; });
-      s.write(`c${i}`);
+      s.write(`\x16c${i}`);
       socks.push({ s, got: () => got });
     }
     await until(() => socks.every((x) => x.got().startsWith('echo:')), 'two under the cap');

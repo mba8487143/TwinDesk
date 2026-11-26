@@ -57,16 +57,20 @@ What goes through the relay:
 
 - The session itself: the cursor, keyboard, clipboard, notifications, file transfers and the rest of the session's messages.
 - File transfers, over the relay's connection. The faster engine (fx2) and unencrypted transfers (**Encrypt file transfers** off) use other ports and aren't used through the relay, so transfers are always encrypted there.
+- **Screen sharing, app windows, sound, the microphone and the camera.** These use WebRTC, which normally needs a direct network path. Through the relay both computers use a small TURN server that runs on the computer that hosts, as a phone on a USB cable does: one side reaches it directly, the other through the relay. WebRTC's own encryption (DTLS-SRTP) covers the media end to end, and the TURN login is sent only inside the encrypted session.
 
 What doesn't go through it yet:
 
 - **Shared folders** and the **terminal** (`ssh twindesk`): they connect to the other computer's address, which a relay doesn't carry. They say so and wait until the computers are on the same network again. A shared folder's password is never sent to the relay or to an address that may belong to another network.
-- **Screen sharing**, audio and the camera: they need a direct network path (WebRTC) for now.
 - The separate input lane (UDP): mouse and keyboard go on the session's own connection instead.
 - **Multi-device** mode doesn't use the relay.
 
 On the computer that hosts, connections that came through the relay are marked, and nothing is ever sent back to their address (it's the relay's).
 
+The relay's connections reach only two places on the computer that hosts: the session's TLS server and the TURN server, told apart by the first byte each client sends. Anything else is closed. The TURN server relays media only between its own allocations, so it can't be used to reach other services on that computer.
+
+Media through the relay travels over TCP, as with a phone on a cable. Expect more delay than on the same network; how much depends on where the relay runs. A phone connected through the relay doesn't use TURN yet, so its screen and camera still need the same network, a cable or Tailscale.
+
 ## Cost
 
-While an address is set, the computer keeps one idle connection to the relay and sends a ping each minute. A phone or another computer does nothing until it needs the relay; a computer then opens a port on 127.0.0.1 for as long as that session lasts. Without an address, nothing runs.
+While an address is set, the computer keeps one idle connection to the relay and sends a ping each minute, and runs its TURN server (idle until a session through the relay uses it). A phone or another computer does nothing until it needs the relay; a computer then opens a port on 127.0.0.1 for as long as that session lasts. Without an address, nothing runs.

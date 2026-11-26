@@ -172,7 +172,10 @@ class Link extends EventEmitter {
     this.ws = ws;
     this.via = pipe ? 'relay' : 'ip';
     this.dial = pipe ? { address: '127.0.0.1', port: pipe.port } : null;
-    if (pipe) ws.on('close', () => pipe.close()); // file transfers already going through it finish
+    if (pipe) {
+      ws.relayPipe = pipe;
+      ws.on('close', () => pipe.close()); // file transfers already going through it finish
+    }
     let seenFp = '';
     ws.on('upgrade', (res) => { seenFp = P.normFingerprint(res.socket.getPeerCertificate().fingerprint256); });
     ws.on('open', () => ws === this.ws && this._onOpen(seenFp, pipe ? (host ? host.address : '') : target.address));
@@ -272,6 +275,9 @@ class Link extends EventEmitter {
         }
         return;
     }
+    // An offer's RTCConfiguration is the host's own (its TURN server's port there): ours instead,
+    // through the relay when the session runs through it (relayIce), none otherwise.
+    if (this.authed && Object.prototype.hasOwnProperty.call(msg, 'ice')) msg = { ...msg, ice: this.relayIce() };
     if (this.authed) this.emit('message', msg, this.ws);
   }
 
@@ -336,6 +342,9 @@ class Link extends EventEmitter {
       fx2Port: msg.fx2 && typeof msg.fx2 === 'object' && Number.isInteger(msg.fx2.port) && msg.fx2.port > 0 && msg.fx2.port < 65536 ? msg.fx2.port : 0, // fast files v2 (shared/fx2.js); older hosts: none
       fxPlainMsg: msg.fxPlain, // unencrypted file transfers (shared/fastfile.js parsePlain); older hosts: none
     };
+    this.turn = RelayPipe.turnLogin(msg.turn); // through its relay: its TURN server's login; else none
+    // WebRTC's RTCConfiguration, read as ctx.ice as on a host's sessions (stream.js, audio.js, mic.js).
+    Object.defineProperty(this.ctx, 'ice', { configurable: true, enumerable: true, get: () => this.relayIce(), set: () => {} });
     const beat = () => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -448,6 +457,13 @@ class Link extends EventEmitter {
       }
       this._connect('session', seen, tailAt);
     }, d);
+  }
+
+  // WebRTC's RTCConfiguration on this side while the session runs through the host's relay: its TURN
+  // server through the session's pipe (shared/relaypipe.js iceThrough). Null otherwise (direct).
+  relayIce() {
+    if (!this.authed || this.via !== 'relay' || !this.ws || !this.ws.relayPipe) return null;
+    return RelayPipe.iceThrough(this.ws.relayPipe, this.turn);
   }
 
   _relayTurn(host) {

@@ -27,6 +27,8 @@ require('module').Module._initPaths();
 const { WebSocketServer } = require('ws');
 
 const P = require('../protocol.js');
+const TURN_LOGIN = { username: 'td', credential: 'turn-secret-1' }; // what a host's welcome gives through its relay
+const HOST_ICE = { iceServers: [{ urls: 'turn:127.0.0.1:1?transport=tcp', username: 'td', credential: 'turn-secret-1' }], iceTransportPolicy: 'relay' };
 const R = require('../relay.js');
 const RP = require('../relaypipe.js');
 
@@ -70,7 +72,7 @@ async function hostServer(id, relayInWelcome, certs = tls) {
         return ws.send(JSON.stringify({ t: T.WELCOME, v: P.PROTOCOL_VERSION, resumed: true }));
       }
       host.hellos.push({ ...m, relayed: s.relayed });
-      ws.send(JSON.stringify({ t: T.WELCOME, v: P.PROTOCOL_VERSION, macId: 'h1', macName: 'Host', os: P.OS.MAC, resume: 'rk1', fx: 'a'.repeat(32), ...(relayInWelcome === undefined ? {} : { relay: relayInWelcome }) }));
+      ws.send(JSON.stringify({ t: T.WELCOME, v: P.PROTOCOL_VERSION, macId: 'h1', macName: 'Host', os: P.OS.MAC, resume: 'rk1', fx: 'a'.repeat(32), ...(relayInWelcome === undefined ? {} : { relay: relayInWelcome }), ...(s.relayed ? { turn: TURN_LOGIN } : {}) }));
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -132,6 +134,18 @@ async function winLinux(platform) {
     assert.strictEqual(peer.current.transport, 'ip', `${platform}: netlink.js sees a network session, as before`);
     link.fx2Port = 0;
 
+    // WebRTC through the relay: the host's TURN through our pipe, from the welcome's login.
+    const ourIce = RP.iceThrough(link.ws.relayPipe, TURN_LOGIN);
+    assert.deepStrictEqual(link.relayIce(), ourIce, `${platform}: ICE through the session's pipe`);
+    assert.strictEqual(ourIce.iceServers[0].urls, `turn:127.0.0.1:${link.ws.port}?transport=tcp`);
+    assert.deepStrictEqual(peer.iceNow(), ourIce, `${platform}: peer.iceNow() as guest`);
+    // An offer arrives with the host's own ICE (its TURN port there): ours replaces it.
+    const offers = [];
+    link.on(T.AUDIO_OFFER, (m) => offers.push(m));
+    host.sessions.find((x) => x.relayed && x.ws.readyState === 1).ws.send(JSON.stringify({ t: T.AUDIO_OFFER, dir: 'm2w', session: 1, sdp: 'v=0', ice: HOST_ICE }));
+    await until(() => offers.length === 1, `${platform}: the offer`);
+    assert.deepStrictEqual(offers[0].ice, ourIce, `${platform}: the offer carries our ICE, never the host's`);
+
     // Back on its network: the session moves there; the relay socket stays as the fallback.
     seen = { address: '127.0.0.1', port: host.port };
     link.networkRetryAt = 0;
@@ -139,6 +153,8 @@ async function winLinux(platform) {
     link._tryResume();
     await until(() => link.transport === 'ip', `${platform}: moved to the network`);
     assert.strictEqual(host.resumes, 1);
+    assert.strictEqual(link.relayIce(), null, `${platform}: on the network, direct WebRTC again`);
+    assert.strictEqual(peer.iceNow(), null);
     assert.ok(link.alt && link.alt.transport === 'relay', `${platform}: the relay is the fallback now`);
     const relaySock = link.alt;
     link.ws.terminate(); // the network goes again
@@ -236,6 +252,16 @@ async function mac() {
     const saved = store.read('hosts.json', [])[0];
     assert.strictEqual(saved.address, '192.0.2.10', 'mac: the pipe never replaces the saved address');
     assert.deepStrictEqual(saved.relay, info);
+
+    // WebRTC through the relay: ctx.ice (stream.js, audio.js…) is the host's TURN through our pipe.
+    const ourIce = RP.iceThrough(link.ws.relayPipe, TURN_LOGIN);
+    assert.ok(ourIce && ourIce.iceServers[0].urls === `turn:127.0.0.1:${link.dial.port}?transport=tcp`);
+    assert.deepStrictEqual(link.ctx.ice, ourIce, 'mac: ctx.ice through the pipe');
+    const got = [];
+    link.on('message', (m) => got.push(m));
+    host.sessions.find((x) => x.relayed && x.ws.readyState === 1).ws.send(JSON.stringify({ t: T.RTC2_OFFER, session: 1, sdp: 'v=0', kind: 'screen', ice: HOST_ICE }));
+    await until(() => got.some((m) => m.t === T.RTC2_OFFER), 'mac: the offer');
+    assert.deepStrictEqual(got.find((m) => m.t === T.RTC2_OFFER).ice, ourIce, 'mac: our ICE, never the host’s');
 
     const peer = Object.create(Peer.prototype);
     Object.assign(peer, { server: { current: null }, link });

@@ -33,7 +33,7 @@ function transportOf(opts) {
       connected: () => !!(l.status && l.status.state === 'connected'),
       welcome: (fn) => l.on('welcome', fn),
       closed: (fn) => l.on('closed', fn),
-      ice: () => { const c = l.hosting && l.server && l.server.current; return (c && c.ice) || null; },
+      ice: () => { if (l.iceNow) return l.iceNow(); const c = l.hosting && l.server && l.server.current; return (c && c.ice) || null; }, // either side (peer.js iceNow)
     };
   }
   const s = opts.server;

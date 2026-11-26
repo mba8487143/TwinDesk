@@ -141,6 +141,14 @@ class Peer {
     return !!(this.server && this.server.current);
   }
 
+  // WebRTC's RTCConfiguration for the session now, whichever side: as host the session's (a phone on
+  // the cable, a computer through our relay: server.js ctx.ice); as guest through the other one's
+  // relay (link.js relayIce). Null: direct, as always on a network.
+  iceNow() {
+    if (this.hosting) return this.server.current.ice || null;
+    return this.link.authed && this.link.relayIce ? this.link.relayIce() : null;
+  }
+
   // Preserve link.js's authentication gate for features that use this adapter in either role.
   get authed() {
     return !!(this.hosting ? this.server.current.authed : this.link.authed);

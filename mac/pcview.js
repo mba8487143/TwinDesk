@@ -140,7 +140,8 @@ class PcView extends EventEmitter {
     clearTimeout(this.closeTimer);
     this._open();
     this._toWin({ t: 'offer', session: m.session, sdp: m.sdp, audio: m.kind === 'screen+audio', volume: this.getSettings().audio.volume, input: !!this.cfg.input,
-      pacing: this.getSettings().sharing.pace || 'fast', framegen: !!this.cfg.framegen });
+      pacing: this.getSettings().sharing.pace || 'fast', framegen: !!this.cfg.framegen,
+      ice: (this.server.current && this.server.current.ice) || null }); // through a relay: its TURN (shared/relay.js)
     if (this.remote) this._toWin({ t: 'remote', ...this.remote });
     this.emit('change');
   }

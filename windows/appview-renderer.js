@@ -46,7 +46,7 @@ async function onOffer(m) {
   closePc();
   session = m.session;
   pacing = ['smooth', 'steady'].includes(m.pacing) ? m.pacing : 'fast'; // steady: as monitor.js
-  const my = (pc = new RTCPeerConnection({ iceServers: [] }));
+  const my = (pc = new RTCPeerConnection(m.ice || { iceServers: [] })); // ice: through a relay, its TURN
   const queue = (pending = []);
   const ms = new MediaStream();
   setOverlay('Connecting…');

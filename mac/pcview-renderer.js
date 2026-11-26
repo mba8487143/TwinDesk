@@ -140,7 +140,7 @@ async function onOffer(m) {
   document.body.classList.toggle('input-off', !inputOn);
   video.muted = !m.audio;
   video.volume = Math.max(0, Math.min(1, Number(m.volume)));
-  const my = (pc = new RTCPeerConnection({ iceServers: [] }));
+  const my = (pc = new RTCPeerConnection(m.ice || { iceServers: [] })); // ice: through a relay, its TURN
   const queue = (pending = []);
   const ms = new MediaStream();
   setOverlay('Connecting…');

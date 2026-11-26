@@ -488,6 +488,9 @@ class Link {
         return this._changed();
     }
     if (!this.authed) return;
+    // An offer's RTCConfiguration is the host's own (its TURN server's port there): ours instead,
+    // through the relay when the session runs through it (relayIce), none otherwise.
+    if (Object.prototype.hasOwnProperty.call(msg, 'ice')) msg = { ...msg, ice: this.relayIce() };
     if (this.onAny) return this.onAny(msg);
     const fns = this.handlers.get(msg.t);
     if (fns) for (const fn of fns) fn(msg);
@@ -547,6 +550,7 @@ class Link {
     this.fxToken = typeof msg.fx === 'string' && /^[0-9a-f]{32}$/.test(msg.fx) ? msg.fx : ''; // fast files (shared/fastfile.js); older hosts: none
     this.fx2Port = msg.fx2 && typeof msg.fx2 === 'object' && Number.isInteger(msg.fx2.port) && msg.fx2.port > 0 && msg.fx2.port < 65536 ? msg.fx2.port : 0; // fast files v2 (shared/fx2.js); older hosts: none
     this.il = msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js); older hosts: none
+    this.turn = RelayPipe.turnLogin(msg.turn); // through its relay: its TURN server's login (screen, sound, camera); else none
     this.resumeAt = 0;
     const os = osOf(msg.os || this.pairing.os);
     const moved = this.transport === 'ip' && (this.pairing.address !== this.ws.address || this.pairing.port !== this.ws.port);
@@ -679,6 +683,14 @@ class Link {
       this.dialRelay = !this.dialAt && !seen && this._relayTurn();
       this._connect('session');
     }, delay);
+  }
+
+  // WebRTC's RTCConfiguration on this side while the session runs through the host's relay: its TURN
+  // server through the session's pipe (shared/relaypipe.js iceThrough). Null otherwise (direct).
+  relayIce() {
+    const ws = this.ws;
+    if (!this.authed || this.transport !== 'relay' || !ws || !ws.relayPipe) return null;
+    return RelayPipe.iceThrough(ws.relayPipe, this.turn);
   }
 
   _relayTurn() {

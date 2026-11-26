@@ -26,6 +26,8 @@
 const net = require('net');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const P = require('./protocol.js');
+const { TurnThread } = require('./turn.js');
 
 const DEFAULT_PORT = 47100;
 const PING_MS = 60000;
@@ -76,9 +78,11 @@ function readLine(sock, ms, cb) {
 
 class RelayHost extends EventEmitter {
   // server: the session's server (its .https takes the relayed connections).
-  constructor({ server, addr, key = '', id }) {
+  // turnPort(): the TURN server's port here (screen, sound, camera through the relay), 0 for none.
+  constructor({ server, addr, key = '', id, turnPort = () => 0 }) {
     super();
     this.server = server;
+    this.turnPort = turnPort;
     this.to = parseAddr(addr);
     this.key = cleanKey(key) || '-';
     this.id = id;
@@ -163,7 +167,9 @@ class RelayHost extends EventEmitter {
     s.on('error', (e) => fail(e.code === 'ECONNREFUSED' ? 'Nothing answers at that address' : e.code === 'ENOTFOUND' ? 'No such address' : e.message));
   }
 
-  // A phone or computer asked: a connection of its own, handed to the session's server once spliced.
+  // A phone or computer asked: a connection of its own. What it says first tells where it goes: TLS
+  // (a record starts 0x16) to the session's server, STUN (a TURN client's Allocate starts 0x00) to
+  // the TURN server, anything else nowhere. Both are spoken first by the side that connects.
   // Marked (isRelayed): its address is the relay's, not the device's, so nothing dials back to it.
   _take(n) {
     const s = net.connect({ host: this.to.host, port: this.to.port });
@@ -173,10 +179,33 @@ class RelayHost extends EventEmitter {
     s.on('error', () => s.destroy());
     readLine(s, TAKE_MS, (err, line, rest) => {
       if (err || line !== 'ok' || !this.server || !this.server.https) return s.destroy();
-      if (rest.length) s.unshift(rest);
-      mark(s);
-      this.server.https.emit('connection', s);
-      this.emit('relayed');
+      const route = (first) => {
+        clearTimeout(quiet);
+        s.pause();
+        s.unshift(first);
+        if (first[0] === 0x16) {
+          mark(s);
+          this.server.https.emit('connection', s);
+          return this.emit('relayed');
+        }
+        const port = first[0] <= 0x01 ? this.turnPort() : 0;
+        if (!port) return s.destroy();
+        const t = net.connect({ host: '127.0.0.1', port });
+        t.setNoDelay(true);
+        const end = () => { s.destroy(); t.destroy(); };
+        t.on('error', end);
+        s.on('error', end);
+        s.on('close', end);
+        t.on('close', end);
+        s.pipe(t);
+        t.pipe(s);
+        this.emit('relayed', 'turn');
+      };
+      // Nothing said in a while: it goes (the relay already joined it to someone who said nothing).
+      const quiet = setTimeout(() => s.destroy(), TAKE_MS);
+      if (rest.length) return route(rest);
+      s.once('data', route);
+      s.once('close', () => clearTimeout(quiet));
     });
   }
 }
@@ -252,6 +281,11 @@ function pairTarget(text, setting, selfFp) {
 // apply() on start and when the setting changes; nothing runs while no address is set).
 let host = null;
 let pairHost = null; // while Allow pairing through the relay is on: waiting under the TwinDesk ID too
+// TURN for computers through the relay (shared/turn.js): screen, sound, microphone and camera go
+// WebRTC → TCP through the relay → this computer's TURN server, the same way a phone's go through its
+// USB cable. Started with the relay, on a port of its own; stopped with it.
+let turn = null;
+let turnReady = false;
 let code = '';
 let applied = '';
 let appliedServer = null;
@@ -265,13 +299,23 @@ function apply({ server, fp, relay, onState = () => {} }) {
   if (pairHost) pairHost.stop();
   host = pairHost = null;
   code = '';
+  const wantTurn = !!(r.addr && server && fp);
+  if (!wantTurn && turn) { turn.stop(); turn = null; turnReady = false; }
+  if (wantTurn && !turn) {
+    const t = (turn = new TurnThread({ port: 0 }));
+    t.start().then(() => { if (turn === t) { turnReady = true; onState(); } }, (e) => {
+      console.error(`[relay] TURN: ${e.message}`);
+      if (turn === t) turn = null;
+    });
+  }
+  const turnPort = () => (turnReady && turn ? turn.port : 0);
   if (r.addr && server && fp) {
-    host = new RelayHost({ server, addr: r.addr, key: r.key, id: idOf(fp) });
+    host = new RelayHost({ server, addr: r.addr, key: r.key, id: idOf(fp), turnPort });
     host.on('state', onState);
     host.start();
     if (r.pair) {
       code = codeOf(fp);
-      pairHost = new RelayHost({ server, addr: r.addr, key: r.key, id: idOfCode(code) });
+      pairHost = new RelayHost({ server, addr: r.addr, key: r.key, id: idOfCode(code), turnPort });
       pairHost.on('state', onState);
       pairHost.start();
     }
@@ -281,6 +325,20 @@ function apply({ server, fp, relay, onState = () => {} }) {
 // Pairing requests that came through the relay are taken only while this is on (pairing.js,
 // hostpair.js): with it off they're refused before anything is shown.
 const pairingAllowed = () => !!pairHost;
+
+// The RTCConfiguration for a session through our relay, on this side: our TURN server, relayed
+// candidates only. Null for any other session (a phone's: it doesn't tunnel TURN yet; one that
+// moved to the network: direct again). servers read it as ctx.ice each time (it follows the socket).
+function iceFor(ctx) {
+  if (!ctx || !ctx.ws || ctx.ws.relayed !== true || P.isPhoneOs(ctx.os) || !turnReady || !turn) return null;
+  return turn.ice();
+}
+// What the other side needs to reach the same TURN server through the relay (welcome {turn}).
+function turnFor(ctx) {
+  const ice = iceFor(ctx);
+  const s = ice && ice.iceServers[0];
+  return s ? { username: s.username, credential: s.credential } : null;
+}
 const view = () => (host ? { ...host.view, addr: host.to ? `${host.to.host}:${host.to.port}` : '', code: formatCode(code) } : { state: 'off', error: '', addr: '', code: '' });
 
-module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, isRelayed, viaRelay, pairingAllowed, codeOf, idOfCode, parseCode, formatCode, pairTarget, CODE_DIGITS, DEFAULT_PORT };
+module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, isRelayed, viaRelay, pairingAllowed, iceFor, turnFor, codeOf, idOfCode, parseCode, formatCode, pairTarget, CODE_DIGITS, DEFAULT_PORT };

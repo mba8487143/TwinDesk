@@ -44,7 +44,7 @@ class CamShare {
       if (this.viewer) this._viewStatus('ended');
     });
     link.on(T.CAM_ANSWER, (m) => m && typeof m.sdp === 'string' && this._toSender({ t: 'answer', sdp: m.sdp }));
-    link.on(T.CAM_OFFER, (m) => m && typeof m.sdp === 'string' && this._toViewer({ t: 'offer', sdp: m.sdp }));
+    link.on(T.CAM_OFFER, (m) => m && typeof m.sdp === 'string' && this._toViewer({ t: 'offer', sdp: m.sdp, ice: this._ice() }));
     link.on(T.CAM_ICE, (m) => {
       if (!m || !m.candidate) return;
       if (m.from === 'view') this._toSender({ t: 'ice', candidate: m.candidate });
@@ -109,7 +109,7 @@ class CamShare {
     if (!this.share) return this.link.send({ t: T.CAM_STATE, status: 'refused' });
     if (this.link.ble()) return this.link.send({ t: T.CAM_STATE, status: 'failed', error: 'needs Wi-Fi or a cable: not through Bluetooth' });
     this._stopSending(false);
-    this._toSender({ t: 'start', deviceId: this.cfg().device || '' }, true);
+    this._toSender({ t: 'start', deviceId: this.cfg().device || '', ice: this._ice() }, true);
     this.sender.status = 'starting';
     this.link.send({ t: T.CAM_STATE, status: 'starting' });
     this.popup('driven', `${this.peerName()} is viewing this computer’s camera`, { key: '{name} is viewing this computer’s camera', vars: { name: this.peerName() } });
@@ -150,6 +150,11 @@ class CamShare {
       if (m.status === 'failed') this.popup('home', `The camera didn’t start: ${String(m.error || '').slice(0, 120)}`, { key: 'The camera didn’t start: {error}', vars: { error: String(m.error || '').slice(0, 120) } });
       this.onChange();
     }
+  }
+
+  // WebRTC's RTCConfiguration on this side: through a relay its TURN (link.ice), else none (direct).
+  _ice() {
+    return (this.link.ice && this.link.ice()) || null;
   }
 
   _toSender(m, create = false) {
