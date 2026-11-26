@@ -144,9 +144,16 @@ class Link {
 
   // id: the host's, for one seen over Bluetooth (address 'ble:…').
   // route: the network picked in Found nearby, kept as the paired computer's chosen route.
-  startPairing({ address, port, macName, id, route }) {
+  // relay: {addr, key, id} to pair through a relay (Connect by address with a TwinDesk ID): no address then.
+  // failed: a message to show at once instead (Connect by address with an ID it can't use).
+  startPairing({ address, port, macName, id, route, relay, failed }) {
     clearTimeout(this.timers.reconnect);
-    this.pairState = { phase: 'connecting', address, port: port || P.PORT, macName: macName || address, id: id || '', route: route || '', code: '', error: '' };
+    if (failed) {
+      this.pairState = { phase: 'failed', address: '', port: P.PORT, macName: macName || '', id: '', route: '', relay: null, code: '', error: String(failed) };
+      return this._changed();
+    }
+    const r = RelayPipe.info(relay);
+    this.pairState = { phase: 'connecting', address: r ? '' : address, port: port || P.PORT, macName: macName || address, id: id || '', route: r ? '' : route || '', relay: r, code: '', error: '' };
     this._connect('pair');
     this._changed();
   }
@@ -233,7 +240,8 @@ class Link {
       if (seen && !isBle(seen.address)) target = { ...target, address: seen.address, port: seen.port };
     }
     if (mode === 'session' && this.dialAt) target = { ...target, address: this.dialAt }; // this attempt only (Tailnet.pick)
-    const viaRelay = mode === 'session' && relayNow && !!RelayPipe.info(this.pairing.relay);
+    // This attempt only; always for a host paired through the relay that was never seen on a network.
+    const viaRelay = mode === 'session' && (relayNow || !target.address) && !!RelayPipe.info(this.pairing.relay);
     // Every network the host is seen on, the chosen route first: one that can't be reached moves on to
     // the next at once (_socketClosed), not after the reconnect delay.
     this.routeQueue = [];
@@ -254,7 +262,12 @@ class Link {
     // Mouse and keyboard over Bluetooth (shared/bleinput.js): through it first even on the same network,
     // so the session keeps it beside the network one once it moves there.
     const viaBle = isBle(target.address) || (mode === 'session' && near && (!this.resolveAddress(hostId) || Date.now() < this.networkRetryAt || !!this.bleInput));
+    if (mode === 'pair' && this.pairState.relay) return this._openRelay(seq, this.pairState.relay);
     if (!viaBle && viaRelay) return this._openRelay(seq);
+    if (!viaBle && !target.address) { // paired through a relay it no longer has, and not seen here
+      this.lastError = '{Name} isn’t on this network';
+      return mode === 'pair' ? this._pairFailed('{Name} isn’t on this network.') : this._scheduleReconnect();
+    }
     if (!viaBle) return this._open(target.address, target.port, 'ip');
     if (!near) {
       this.lastError = '{Name} isn’t nearby';
@@ -272,8 +285,7 @@ class Link {
 
   // Through the host's own relay: a port here once the host took the first connection, then the usual
   // WSS to it (its certificate pinned as always). The pipe goes with the socket that uses it.
-  _openRelay(seq) {
-    const r = RelayPipe.info(this.pairing.relay);
+  _openRelay(seq, r = RelayPipe.info(this.pairing.relay)) {
     this.ws = { readyState: WebSocket.CONNECTING, terminate: () => {}, close: () => {}, bufferedAmount: 0 }; // opening the pipe
     console.log('[link] not on this network: through its relay ' + r.addr);
     RelayPipe.RelayPipe.open(r).then((pipe) => {
@@ -283,6 +295,7 @@ class Link {
       if (seq !== this.seq) return;
       this.lastError = RelayPipe.message(e);
       console.log('[link] relay: ' + this.lastError + (e.detail ? ' (' + e.detail + ')' : ''));
+      if (this.mode === 'pair') { this.ws = null; return this._pairFailed(RelayPipe.pairMessage(e)); }
       this._onClose();
     });
   }
@@ -506,12 +519,13 @@ class Link {
     this.pairing = {
       macId: msg.macId,
       macName: typeof msg.macName === 'string' && msg.macName ? msg.macName : ps.macName,
-      address: ps.address,
+      address: ps.address, // '' when paired through a relay: discovery fills it once it's seen on a network
       port: ps.port,
       fp: this.seenFp,
       token: msg.token,
       os: osOf(msg.os), // the host's OS; older Macs send none
       ...(ps.route ? { route: ps.route } : {}), // the network picked to pair through
+      ...(ps.relay ? { relay: ps.relay } : {}), // until its welcome says which relay to use for sessions
     };
     this.store.save(this.pairing);
     this.pairState = null;
@@ -669,6 +683,7 @@ class Link {
 
   _relayTurn() {
     if (!RelayPipe.info(this.pairing && this.pairing.relay)) return (this.relayTurn = false);
+    if (!this.pairing.address) return (this.relayTurn = true); // never seen on a network: the relay is the only way
     return (this.relayTurn = !this.relayTurn);
   }
 

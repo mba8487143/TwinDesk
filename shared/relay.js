@@ -211,30 +211,76 @@ function welcome() {
   return r && r.addr && r.id ? { addr: r.addr, key: cleanKey(r.key), id: r.id } : undefined;
 }
 
-// settings.net.relay as kept: {addr, key} (addr '' = none).
+// settings.net.relay as kept: {addr, key, pair} (addr '' = none; pair: Allow pairing through the
+// relay, off unless switched on, and never without an address).
 function clean(r) {
   const addr = r && parseAddr(r.addr) ? String(r.addr).trim() : '';
-  return { addr, key: addr ? cleanKey(r && r.key) : '' };
+  return { addr, key: addr ? cleanKey(r && r.key) : '', pair: !!addr && !!r && r.pair === true };
+}
+
+// TwinDesk ID: nine digits a person can read out or type ("123 456 789"), from this computer's
+// certificate. Only while Allow pairing through the relay is on does the computer wait on the relay
+// under it (idOfCode: a relay id of its own, not the session's idOf(fp)), so a device that has
+// never met it can ask to pair: the code compare and Allow here still decide.
+const CODE_DIGITS = 9;
+function codeOf(fp) {
+  const h = crypto.createHash('sha256').update(`twindesk-relay-code:${String(fp || '')}`).digest('hex');
+  return (BigInt(`0x${h.slice(0, 16)}`) % 10n ** BigInt(CODE_DIGITS)).toString().padStart(CODE_DIGITS, '0');
+}
+const idOfCode = (code) => crypto.createHash('sha256').update(`twindesk-relay-pair:${String(code || '')}`).digest('hex').slice(0, 32);
+// What a person typed ("123 456 789", "123-456-789", "123456789") → the nine digits, or null.
+function parseCode(text) {
+  const d = String(text || '').trim().replace(/[\s-]/g, '');
+  return new RegExp(`^\\d{${CODE_DIGITS}}$`).test(d) ? d : null;
+}
+const formatCode = (code) => (code ? `${code.slice(0, 3)} ${code.slice(3, 6)} ${code.slice(6)}` : '');
+
+// Connect by address with what a person typed: null when it isn't a TwinDesk ID (an address, go on
+// as before); else what to pair with: {name, relay: {addr, key, id}} through this computer's own
+// relay setting (the same relay as the other computer's), or {name, failed} saying what's missing.
+function pairTarget(text, setting, selfFp) {
+  const code = parseCode(text);
+  if (!code) return null;
+  const name = `ID ${formatCode(code)}`;
+  if (selfFp && codeOf(selfFp) === code) return { name, failed: 'That’s this computer’s own TwinDesk ID.' };
+  const r = clean(setting);
+  if (!r.addr) return { name, failed: 'To connect with a TwinDesk ID, add the same relay as the other computer first: General › Your own relay.' };
+  return { name, code, relay: { addr: r.addr, key: r.key, id: idOfCode(code) } };
 }
 
 // The app's one relay: started, changed or stopped from settings.net.relay (each app calls
 // apply() on start and when the setting changes; nothing runs while no address is set).
 let host = null;
+let pairHost = null; // while Allow pairing through the relay is on: waiting under the TwinDesk ID too
+let code = '';
 let applied = '';
+let appliedServer = null;
 function apply({ server, fp, relay, onState = () => {} }) {
   const r = clean(relay);
   const k = JSON.stringify([r, fp]);
-  if (k === applied) return;
+  if (k === applied && server === appliedServer) return; // a new server (restarted) takes the relay too
   applied = k;
+  appliedServer = server;
   if (host) host.stop();
-  host = null;
+  if (pairHost) pairHost.stop();
+  host = pairHost = null;
+  code = '';
   if (r.addr && server && fp) {
     host = new RelayHost({ server, addr: r.addr, key: r.key, id: idOf(fp) });
     host.on('state', onState);
     host.start();
+    if (r.pair) {
+      code = codeOf(fp);
+      pairHost = new RelayHost({ server, addr: r.addr, key: r.key, id: idOfCode(code) });
+      pairHost.on('state', onState);
+      pairHost.start();
+    }
   }
   use(() => (host ? { addr: r.addr, key: r.key, id: idOf(fp) } : null));
 }
-const view = () => (host ? { ...host.view, addr: host.to ? `${host.to.host}:${host.to.port}` : '' } : { state: 'off', error: '', addr: '' });
+// Pairing requests that came through the relay are taken only while this is on (pairing.js,
+// hostpair.js): with it off they're refused before anything is shown.
+const pairingAllowed = () => !!pairHost;
+const view = () => (host ? { ...host.view, addr: host.to ? `${host.to.host}:${host.to.port}` : '', code: formatCode(code) } : { state: 'off', error: '', addr: '', code: '' });
 
-module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, isRelayed, viaRelay, DEFAULT_PORT };
+module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, isRelayed, viaRelay, pairingAllowed, codeOf, idOfCode, parseCode, formatCode, pairTarget, CODE_DIGITS, DEFAULT_PORT };

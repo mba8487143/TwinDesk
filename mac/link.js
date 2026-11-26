@@ -81,10 +81,13 @@ class Link extends EventEmitter {
     this.ws.send(JSON.stringify(obj));
   }
 
-  startPairing({ address, port, name }) {
+  // relay: {addr, key, id} to pair through a relay (Connect by address with a TwinDesk ID): no address then.
+  startPairing({ address, port, name, relay }) {
     clearTimeout(this.timers.reconnect);
-    this.pairState = { phase: 'connecting', address, port: port || P.PORT, name: name || address, code: '', error: '' };
-    this._connect('pair');
+    const r = RelayPipe.info(relay);
+    this.pairState = { phase: 'connecting', address: r ? '' : address, port: port || P.PORT, name: name || address, relay: r, code: '', error: '' };
+    if (r) this._connectRelay(null, 'pair');
+    else this._connect('pair');
     this._changed();
   }
 
@@ -159,7 +162,8 @@ class Link extends EventEmitter {
     this.mode = mode;
     this.host = host || null;
     this.nw = this.nm = null;
-    const target = mode === 'pair' ? this.pairState : pipe ? { ...host, address: '127.0.0.1', port: pipe.port } : { ...host, address: at || host.address };
+    const through = pipe ? { address: '127.0.0.1', port: pipe.port } : null;
+    const target = mode === 'pair' ? { ...this.pairState, ...through } : through ? { ...host, ...through } : { ...host, address: at || host.address };
     const ws = new WebSocket(`wss://${target.address.includes(':') ? `[${target.address}]` : target.address}:${target.port}`, {
       rejectUnauthorized: false, // self-signed; the fingerprint is pinned instead
       maxPayload: P.MAX_PAYLOAD,
@@ -171,7 +175,7 @@ class Link extends EventEmitter {
     if (pipe) ws.on('close', () => pipe.close()); // file transfers already going through it finish
     let seenFp = '';
     ws.on('upgrade', (res) => { seenFp = P.normFingerprint(res.socket.getPeerCertificate().fingerprint256); });
-    ws.on('open', () => ws === this.ws && this._onOpen(seenFp, pipe ? host.address : target.address));
+    ws.on('open', () => ws === this.ws && this._onOpen(seenFp, pipe ? (host ? host.address : '') : target.address));
     ws.on('message', (data, isBinary) => ws === this.ws && !isBinary && this._onMessage(String(data)));
     ws.on('error', (err) => { if (ws === this.ws) this.lastError = err.code || err.message; });
     ws.on('close', () => ws === this.ws && this._onClose());
@@ -179,22 +183,24 @@ class Link extends EventEmitter {
 
   // Through the host's own relay: a port here once the host took the first connection, then the usual
   // WSS to it (_connect with the pipe; its certificate pinned as always).
-  _connectRelay(host) {
+  // mode 'pair': pairing with a TwinDesk ID (pairState.relay), no host yet.
+  _connectRelay(host, mode = 'session') {
     this._closeSocket();
     clearTimeout(this.timers.reconnect);
     const seq = this.seq;
-    const r = RelayPipe.info(host.relay);
-    this.mode = 'session';
+    const r = RelayPipe.info(mode === 'pair' ? this.pairState && this.pairState.relay : host.relay);
+    this.mode = mode;
     this.host = host;
     this.ws = { readyState: WebSocket.CONNECTING, terminate: () => {}, close: () => {} }; // opening the pipe
-    console.log(`[link] ${host.name} isn’t on this network: through its relay ${r.addr}`);
+    console.log(mode === 'pair' ? `[link] pairing through the relay ${r.addr}` : `[link] ${host.name} isn’t on this network: through its relay ${r.addr}`);
     RelayPipe.RelayPipe.open(r).then((pipe) => {
       if (seq !== this.seq) return pipe.destroy(); // cancelled, or another attempt meanwhile
-      this._connect('session', host, '', pipe);
+      this._connect(mode, host, '', pipe);
     }, (e) => {
       if (seq !== this.seq) return;
-      this.lastError = RelayPipe.message(e, host.name);
+      this.lastError = RelayPipe.message(e, host ? host.name : '');
       console.log(`[link] relay: ${this.lastError}${e.detail ? ` (${e.detail})` : ''}`);
+      if (mode === 'pair') { this.ws = null; return this._pairFailed(RelayPipe.pairMessage(e)); }
       this._onClose();
     });
   }
@@ -294,11 +300,12 @@ class Link extends EventEmitter {
       id: msg.macId,
       name: typeof msg.macName === 'string' && msg.macName ? msg.macName.slice(0, 64) : ps.name,
       os: msg.os || P.OS.MAC,
-      address: ps.address,
+      address: ps.address, // '' when paired through a relay: discovery fills it once it's seen on a network
       port: ps.port,
       fp: this.seenFp,
       token: msg.token,
       lastSeen: Date.now(),
+      ...(ps.relay ? { relay: ps.relay } : {}), // until its welcome says which relay to use for sessions
     };
     this.hosts = [host, ...this.hosts.filter((h) => h.id !== host.id)];
     this._save();
@@ -435,12 +442,17 @@ class Link extends EventEmitter {
       const tailAt = Tailnet.pick({ address: seen.address, seen: at, tail: seen.tail, attempt: this.attempt });
       // Not seen here either way: every other one of the rest through the host's own relay, if it has one.
       if (!at && tailAt === seen.address && this._relayTurn(seen)) return this._connectRelay(seen);
+      if (!tailAt) { // paired through a relay it no longer has, and not seen here
+        this.lastError = `${seen.name} isn’t on this network`;
+        return this._scheduleReconnect();
+      }
       this._connect('session', seen, tailAt);
     }, d);
   }
 
   _relayTurn(host) {
     if (!RelayPipe.info(host && host.relay)) return (this.relayTurn = false);
+    if (!host.address) return (this.relayTurn = true); // never seen on a network: the relay is the only way
     return (this.relayTurn = !this.relayTurn);
   }
 

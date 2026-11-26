@@ -133,6 +133,13 @@ function setupIpc(ctx) {
 
   const actions = {
     async connectAddress(text) {
+      // A TwinDesk ID (nine digits) instead of an address: pair through the relay (shared/relay.js pairTarget).
+      const byId = require('../shared/relay.js').pairTarget(text, settings.net && settings.net.relay, ctx.state.fp);
+      if (byId) {
+        if (byId.failed) return report(byId.failed, true);
+        report('');
+        return ctx.link.startPairing({ name: byId.name, relay: byId.relay });
+      }
       const address = String(text || '').trim();
       if (!/^(\d{1,3})(\.\d{1,3}){3}$/.test(address)) return report('Type an address like 192.168.1.20.', true);
       if (ctx.state.addresses.includes(address)) return report('That’s this Mac.', true);

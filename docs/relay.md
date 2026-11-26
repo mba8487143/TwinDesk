@@ -31,6 +31,26 @@ After that, when the phone or computer can't see the computer on its network, ev
 
 A computer connected through the relay moves the session back to the network on its own once it sees the other computer there again (Windows and Linux), and keeps the relay as a fallback.
 
+## Pair with a TwinDesk ID
+
+Two computers that have never been on the same network can pair through the relay, the way AnyDesk connects by ID. Both need the same relay (address and key) in **General › Your own relay**.
+
+1. On the computer to connect to, turn on **Allow pairing through the relay** (off by default). The row shows its **TwinDesk ID**, nine digits such as `123 456 789`.
+2. On the other computer, type that ID in **Connect by address** and click **Connect**.
+3. Both show the same six-digit code. Compare it (over the phone, for example). Click **Codes match** on one and **Allow** on the other.
+
+What keeps it safe:
+
+- The ID is derived from the computer's certificate. While pairing through the relay is off, the computer isn't registered under it, and a pairing request that comes through the relay anyway is refused before any code or prompt is shown.
+- The code compare is the same as on a network: it includes the certificate's fingerprint, so nobody in between (the relay included) can make both sides show the same code.
+- The prompt says the request came **through your relay, from outside this network**.
+- Failed attempts through the relay count toward their own lockout (five in ten minutes), apart from the ones on this network, so someone failing through the relay can't stop pairing at home.
+- Turning pairing through the relay off again doesn't affect computers already paired: they keep connecting through the relay.
+
+A computer paired this way has no network address saved. It always connects through the relay until it's seen on the same network, then it moves there as usual.
+
+A Mac pairs by ID with another Mac, and a Windows or Linux computer with any computer. To connect a Mac to a PC, type the Mac's ID on the PC.
+
 ## Through the relay between computers
 
 What goes through the relay:

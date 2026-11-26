@@ -68,7 +68,8 @@ UI.tab({
     const addrVal = el('span', { class: 'value addr', attrs: { 'data-literal': '' } });
     const copyBtn = UI.button(t('Copy'), () => UI.state && api.copyText(UI.state.addresses[0] || ''), 'small');
     const addrRow = UI.row('{me}', '', [addrVal, copyBtn]);
-    const ipInput = el('input', { type: 'text', placeholder: '192.168.1.20', autocomplete: 'off', spellcheck: false, attrs: { 'aria-label': t('Address') } });
+    const ipInput = el('input', { type: 'text', placeholder: '192.168.1.20 · 123 456 789', // an address, or a TwinDesk ID (shared/relay.js)
+      autocomplete: 'off', spellcheck: false, attrs: { 'aria-label': t('Address') } });
     let asking = '';
     const ipBtn = UI.button(t('Connect'), async () => {
       const v = ipInput.value.trim();
