@@ -27,7 +27,10 @@ command -v systemctl >/dev/null || die "this script needs systemd"
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "REPO must look like owner/TwinDesk"
 [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || die "REF must be a branch, tag or commit"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+# A checkout's own files only when this script is a file there (not piped from curl: then the
+# current directory says nothing, and both files come from REPO@REF).
+HERE=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
