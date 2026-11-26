@@ -1,0 +1,45 @@
+# TwinDesk Relay as a systemd service (relay/deploy/install.sh puts it in /etc/systemd/system).
+# The key and port live in /etc/twindesk-relay.env (root only), not on the command line.
+[Unit]
+Description=TwinDesk Relay
+Documentation=https://github.com/InukaAsith/TwinDesk/blob/main/docs/relay.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=twindesk-relay
+Group=twindesk-relay
+EnvironmentFile=/etc/twindesk-relay.env
+ExecStart=/usr/bin/env node /opt/twindesk-relay/twindesk-relay.js
+Restart=always
+RestartSec=3
+# Many devices, many connections: well above the relay's own limit (4000).
+LimitNOFILE=16384
+
+# It only listens and copies bytes: nothing else is allowed.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
