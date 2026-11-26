@@ -113,8 +113,9 @@ class Sender extends EventEmitter {
     return nic ? { address: nic.address, netmask: nic.netmask } : null;
   }
 
-  // A phone on the USB cable: WebRTC through the relay (wired.js), else null.
+  // A phone on the USB cable, or a computer through your own relay: WebRTC through TURN, else null.
   _ice() {
+    if (this.link.iceNow) return this.link.iceNow(); // either side: the cable's or a relay's TURN (peer.js)
     const c = this.link.hosting && this.link.server && this.link.server.current;
     return (c && c.ice) || null;
   }

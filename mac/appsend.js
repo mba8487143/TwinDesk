@@ -312,6 +312,7 @@ class AppSend extends EventEmitter {
           t: 'start', session, sourceId: src ? src.id : `window:${wid}:0`, width: MAX_W, height: MAX_H, follow: true,
           mbps: this.getSettings().bitrateMbps, fps, offer: { kind: 'window', wid },
           codec: ScreenCodec.mode((this.getSettings().sharing || {}).codec), // Share screen › Encoder
+          ice: (this.server.current && this.server.current.ice) || null, // through a relay: its TURN (shared/relay.js)
         });
       }
     }

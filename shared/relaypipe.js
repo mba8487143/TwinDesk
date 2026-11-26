@@ -55,6 +55,23 @@ function info(r) {
   return { addr, key: cleanKey(r.key), id };
 }
 
+// welcome {turn}: the host's TURN login for a session through its relay ({username, credential}),
+// checked; null for none (an older host, or not through the relay).
+function turnLogin(t) {
+  if (!t || typeof t !== 'object') return null;
+  const ok = (v) => typeof v === 'string' && /^[\x21-\x7e]{1,128}$/.test(v);
+  return ok(t.username) && ok(t.credential) ? { username: t.username, credential: t.credential } : null;
+}
+
+// This side's RTCConfiguration through the host's relay: the host's TURN server, reached through
+// the session's own pipe (its port takes TURN as well as TLS: shared/relay.js routes by the first
+// byte), relayed candidates only. Null without a pipe or a login.
+function iceThrough(pipe, login) {
+  const l = turnLogin(login);
+  if (!pipe || !pipe.port || pipe.closed || !l) return null;
+  return { iceServers: [{ urls: `turn:127.0.0.1:${pipe.port}?transport=tcp`, username: l.username, credential: l.credential }], iceTransportPolicy: 'relay' };
+}
+
 // The same relay (a welcome that changes nothing isn't saved again).
 const same = (a, b) => (!a && !b) || (!!a && !!b && a.addr === b.addr && a.key === b.key && a.id === b.id);
 
@@ -209,4 +226,4 @@ class RelayPipe {
   }
 }
 
-module.exports = { RelayPipe, RelayError, info, same, join, message, pairMessage, MAX_LIVE, MESSAGES };
+module.exports = { RelayPipe, RelayError, info, same, join, message, pairMessage, turnLogin, iceThrough, MAX_LIVE, MESSAGES };

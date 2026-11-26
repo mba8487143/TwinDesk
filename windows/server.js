@@ -298,7 +298,11 @@ class Server extends EventEmitter {
     ctx.deviceId = deviceId;
     ctx.name = name;
     ctx.os = os;
-    ctx.ice = this.iceFor ? this.iceFor(ctx) : null; // a phone through adb reverse: the relay's RTCConfiguration
+    // WebRTC's RTCConfiguration for this session, read as ctx.ice: a phone through adb reverse: the
+    // cable's TURN (wired.js, fixed for the session); a computer through our own relay: the relay's
+    // TURN while its socket is still the relayed one (shared/relay.js iceFor), direct once it moved.
+    const wiredIce = this.iceFor ? this.iceFor(ctx) : null;
+    Object.defineProperty(ctx, 'ice', { configurable: true, enumerable: true, get: () => wiredIce || Relay.iceFor(ctx), set: () => {} });
     ctx.resumeKey = P.randomHex(16);
     // Fast files (shared/fastfile.js): when its hello asked and this app serves them, a token for them.
     ctx.fx = ctx.fxWanted && this.fxOn ? P.randomHex(16) : '';
@@ -307,7 +311,8 @@ class Server extends EventEmitter {
     this.current = ctx;
     // The input lane (shared/inputlane.js): when its hello asked, over the network only.
     const il = ctx.ilWanted && ctx.transport === 'ip' && this.ilOffer ? this.ilOffer(ctx) : null;
-    this.send(ctx, { ...welcome, resume: ctx.resumeKey, ...(ctx.fx ? { fx: ctx.fx } : {}), ...(ctx.fx2 ? { fx2: { port: ctx.fx2 } } : {}), ...(this.fxPlainOffer ? this.fxPlainOffer(ctx) : {}), ...(il ? { il } : {}) });
+    const turn = Relay.turnFor(ctx); // through our relay: its TURN server's login, for the other side's WebRTC
+    this.send(ctx, { ...welcome, ...(turn ? { turn } : {}), resume: ctx.resumeKey, ...(ctx.fx ? { fx: ctx.fx } : {}), ...(ctx.fx2 ? { fx2: { port: ctx.fx2 } } : {}), ...(this.fxPlainOffer ? this.fxPlainOffer(ctx) : {}), ...(il ? { il } : {}) });
     this.emit('client', ctx);
   }
 

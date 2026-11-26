@@ -11,6 +11,11 @@
 // instead, as a network would, and WebRTC slows down and asks for a fresh picture. The relay runs
 // in a thread of its own (TurnThread), so the app's busy main thread never holds a frame.
 //
+// Also for a computer through your own relay (shared/relay.js): both ends' TURN clients reach the
+// same server, one here and one through the relay. Media goes only between this server's own
+// allocations: a client can't send to (or hear from) any other port on this machine.
+// Port 0 picks a free one; the thread says which (TurnThread.port once started).
+//
 //   const turn = new TurnThread({ port }); await turn.start(); turn.ice() -> RTCConfiguration
 'use strict';
 
@@ -108,6 +113,12 @@ class Turn {
     this.key = crypto.createHash('md5').update(`${this.username}:${REALM}:${this.password}`).digest();
     this.nonce = crypto.randomBytes(8).toString('hex');
     this.conns = new Set();
+    this.relayPorts = new Set(); // the allocations' UDP ports: the only peers there are
+  }
+
+  // A peer media may go to: another allocation of this server, nothing else on this machine.
+  _peerOk(peer) {
+    return !!peer && peer.ip === '127.0.0.1' && this.relayPorts.has(peer.port);
   }
 
   start() {
@@ -115,6 +126,7 @@ class Turn {
       this.server = net.createServer((sock) => this._conn(sock));
       this.server.once('error', reject);
       this.server.listen(this.port, this.host, () => {
+        this.port = this.server.address().port; // port 0: the one picked
         this.server.off('error', reject);
         this.server.on('error', (e) => console.error(`[turn] ${e.message}`));
         resolve();
@@ -150,7 +162,7 @@ class Turn {
     });
     const end = () => {
       this.conns.delete(c);
-      if (c.relay) c.relay.close();
+      if (c.relay) { this.relayPorts.delete(c.relayPort); c.relay.close(); }
       c.relay = null;
     };
     sock.on('close', end);
@@ -176,7 +188,7 @@ class Turn {
 
   _channelData(c, frame) {
     const peer = c.channels.get(frame.readUInt16BE(0));
-    if (peer && c.relay) c.relay.send(frame.subarray(4, 4 + frame.readUInt16BE(2)), peer.port, peer.ip);
+    if (peer && c.relay && this._peerOk(peer)) c.relay.send(frame.subarray(4, 4 + frame.readUInt16BE(2)), peer.port, peer.ip);
   }
 
   _send(c, b) {
@@ -239,8 +251,10 @@ class Turn {
         relay.on('message', (data, from) => this._fromPeer(c, data, from));
         relay.on('error', () => {});
         relay.bind(0, '127.0.0.1', () => {
-          c.relay = relay;
           if (c.sock.destroyed) return relay.close();
+          c.relay = relay;
+          c.relayPort = relay.address().port;
+          this.relayPorts.add(c.relayPort);
           done();
         });
         return;
@@ -262,6 +276,7 @@ class Turn {
         const peer = unXorAddr(m.attrs.get(A.XOR_PEER_ADDRESS));
         const num = ch && ch.length >= 2 ? ch.readUInt16BE(0) : 0;
         if (!peer || num < 0x4000 || num > 0x4fff) return this._error(c, m, 400, 'Bad Request');
+        if (!this._peerOk(peer)) return this._error(c, m, 403, 'Forbidden');
         c.channels.set(num, peer);
         c.peers.set(`${peer.ip}:${peer.port}`, num);
         return this._ok(c, m, []);
@@ -269,7 +284,7 @@ class Turn {
       case M.SEND: {
         const peer = unXorAddr(m.attrs.get(A.XOR_PEER_ADDRESS));
         const data = m.attrs.get(A.DATA);
-        if (peer && data && c.relay) c.relay.send(data, peer.port, peer.ip);
+        if (data && c.relay && this._peerOk(peer)) c.relay.send(data, peer.port, peer.ip);
         return;
       }
       default:
@@ -280,6 +295,7 @@ class Turn {
   // From a peer to this allocation's client: ChannelData if the peer has a channel, else a Data
   // indication (no integrity: indications never carry it).
   _fromPeer(c, data, from) {
+    if (!this._peerOk({ ip: from.address, port: from.port })) return; // only this server's allocations
     const num = c.peers.get(`${from.address}:${from.port}`);
     if (num) {
       const h = Buffer.alloc(4);
@@ -304,7 +320,11 @@ class TurnThread {
     return new Promise((resolve, reject) => {
       const w = new Worker(__filename, { workerData: { turn: { port: this.port, host: this.host, password: this.password } } });
       this.worker = w;
-      w.once('message', (m) => (m && m.ok ? resolve() : reject(new Error((m && m.error) || 'relay failed'))));
+      w.once('message', (m) => {
+        if (!m || !m.ok) return reject(new Error((m && m.error) || 'relay failed'));
+        if (m.port) this.port = m.port; // port 0: the one the thread picked
+        resolve();
+      });
       w.once('error', reject);
       w.on('exit', () => { if (this.worker === w) this.worker = null; });
       w.unref(); // never keeps the app from quitting
@@ -323,7 +343,7 @@ class TurnThread {
 
 if (!isMainThread && workerData && workerData.turn) {
   const t = new Turn(workerData.turn);
-  t.start().then(() => parentPort.postMessage({ ok: true }), (e) => parentPort.postMessage({ ok: false, error: e.message }));
+  t.start().then(() => parentPort.postMessage({ ok: true, port: t.port }), (e) => parentPort.postMessage({ ok: false, error: e.message }));
 }
 
 module.exports = { Turn, TurnThread };

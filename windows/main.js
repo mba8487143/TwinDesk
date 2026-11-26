@@ -698,7 +698,7 @@ function loadCamera() {
   const computer = () => link.status.state === 'connected' && !(link.current && P.isPhoneOs(link.current.os));
   camShare = new CamShare({
     getLanguage: () => i18n.locale,
-    link: { on: (t, fn) => link.on(t, fn), send: (m) => link.send(m), connected: computer, ble: () => !!(link.current && link.current.transport === 'ble'), closed: (fn) => link.on('closed', fn) },
+    link: { on: (t, fn) => link.on(t, fn), send: (m) => link.send(m), connected: computer, ble: () => !!(link.current && link.current.transport === 'ble'), closed: (fn) => link.on('closed', fn), ice: () => link.iceNow() }, // ice: through a relay, its TURN
     cfg: () => settings.camera,
     save: saveSettings,
     popup: (kind, text, presentation) => hud && hud.show(kind, presentation || text),

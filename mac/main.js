@@ -899,6 +899,7 @@ app.whenReady().then(() => {
         connected: computer,
         ble: () => !!(peer.current && peer.current.transport === 'ble'),
         closed: (fn) => peer.on('closed', fn),
+        ice: () => (peer.current && peer.current.ice) || null, // through a relay: its TURN (shared/relay.js)
       },
       cfg: () => settings.camera,
       save: () => store.saveSettings(settings),

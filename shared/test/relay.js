@@ -1,7 +1,9 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Your own relay: relay/twindesk-relay.js with shared/relay.js's RelayHost, end to end on this
 // machine. A phone-like client joins, its bytes reach the "session server" and the answer comes
-// back; a wrong key and an absent computer are refused. Run with: node shared/test/relay.js
+// back; a wrong key and an absent computer are refused. What a client says first decides where it
+// goes on the computer (TLS, 0x16, to the session's server; STUN to TURN): these start with 0x16.
+// Run with: node shared/test/relay.js
 'use strict';
 
 const assert = require('assert');
@@ -20,8 +22,8 @@ function client(id, key, send) {
     s.on('connect', () => s.write(`TDR1 join ${id} ${key}\n`));
     s.on('data', (d) => {
       got += d.toString();
-      if (got.startsWith('ok\n') && send) { const x = send; send = null; s.write(x); }
-      if (/echo:|^no\n|^key\n/.test(got)) { s.destroy(); resolve(got); }
+      if (got.startsWith('ok\n') && send) { const x = send; send = null; s.write(`\x16${x}`); } // as a TLS record starts
+      if (/echo:|^no\n|^key\n/.test(got)) { s.destroy(); resolve(got.replace(/\x16/g, '')); }
     });
     s.on('close', () => resolve(got));
     s.on('error', () => resolve(got));
@@ -41,7 +43,8 @@ function client(id, key, send) {
     // No computer yet: refused.
     assert.strictEqual(await client(id, KEY), 'no\n');
 
-    const stub = net.createServer((s) => s.on('data', (d) => s.write(`echo:${d}`)));
+    // The relay hands its connections over paused (a TLS server takes them from there): this echo resumes.
+    const stub = net.createServer((s) => { s.on('data', (d) => s.write(`echo:${d}`)); s.resume(); });
     const host = new R.RelayHost({ server: { https: stub }, addr: `127.0.0.1:${PORT}`, key: KEY, id });
     const ready = new Promise((r) => host.on('state', (v) => v.state === 'ready' && r()));
     host.start();
