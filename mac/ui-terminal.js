@@ -38,7 +38,8 @@ UI.tab({
       outSw.set(t.connectPc);
       shellBtn.hidden = !o.ready;
       const WHY = { waiting: I18n.t('Waiting for {device}…', { device: pc }), not_allowed: I18n.t('Turned off on {device}', { device: pc }), remote_login_off: UI.peer(s).os === 'mac' ? I18n.t('Turn on Remote Login on {device}', { device: pc }) : I18n.t('Set up the SSH server in TwinDesk on {device}', { device: pc }),
-        bluetooth: I18n.t('The terminal doesn’t work over Bluetooth. Connect with Wi-Fi Direct, or join {device}’s network.', { device: pc }) };
+        bluetooth: I18n.t('The terminal doesn’t work over Bluetooth. Connect with Wi-Fi Direct, or join {device}’s network.', { device: pc }),
+        relay: I18n.t('The terminal doesn’t go through the relay yet. Join {device}’s network, or use Tailscale.', { device: pc }) };
       outRow.setHint(!t.connectPc ? '' : o.ready ? I18n.t('Ready, signed in as {user}', { user: o.user }) : WHY[o.why] || (o.why ? I18n.t('Not ready: {why}', { why: o.why }) : I18n.t('Waiting for {device}', { device: pc })));
       cmdRow.setHint('');
       inSw.set(t.allowPc);

@@ -161,6 +161,10 @@ class Smb {
     const addr = this.link.snapshot().link.address;
     if (!m || !addr || this.busy) return;
     if (!/^[\w.$ -]+$/.test(m.share)) return this._state(m.share, false, 'Bad share name');
+    // Through the other computer's relay: its saved address may be on a network we aren't on, and the
+    // password would go to whoever has that address here. Not until the session is on its network.
+    const c = this.link.current;
+    if (c && c.via === 'relay') return this._state(m.share, false, 'Shared folders don’t go through the relay yet');
     const unc = '\\\\' + addr + '\\' + m.share;
     this._busy('mount');
     try {

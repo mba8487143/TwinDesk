@@ -19,6 +19,7 @@ const { WebSocketServer } = require('ws');
 const P = require('../shared/protocol.js');
 const { unauthRoute } = require('../shared/reclaim.js');
 const Quiet = require('../shared/quiet.js'); // idle sessions stop pinging every second (#143)
+const Relay = require('../shared/relay.js');
 
 const ICE_OFFERS = new Set([P.T.RTC_OFFER, P.T.AUDIO_OFFER]);
 const isLoopback = (a) => a === '127.0.0.1' || a === '::1';
@@ -71,6 +72,7 @@ class Server extends EventEmitter {
     };
     if (isLoopback(ctx.address) && this.blePorts.has(req.socket.remotePort)) ctx.transport = 'ble';
     Object.assign(ws, { ctx, lastRx: now, transport: ctx.transport, address: ctx.address, blePort: ctx.transport === 'ble' ? req.socket.remotePort : 0 });
+    ws.relayed = Relay.isRelayed(req.socket); // through our own relay (shared/relay.js): its address is the relay's
     // At most 16 sockets from one address that haven't authenticated (a LAN peer can't open
     // thousands and hold each for UNAUTH_TIMEOUT_MS): past that the oldest goes, never the new one,
     // so a phone retrying on flaky Wi-Fi always gets in. Our own Bluetooth/wired pipes are loopback.

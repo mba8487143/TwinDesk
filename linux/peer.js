@@ -9,6 +9,7 @@
 'use strict';
 
 const P = require('../shared/protocol.js');
+const Relay = require('../shared/relay.js');
 const { FastFiles } = require('../shared/fastfile.js');
 const { Fx2, fx2Off } = require('../shared/fx2.js');
 const { InputLane, laneOff } = require('../shared/inputlane.js');
@@ -184,11 +185,11 @@ class Peer {
   get current() {
     if (this.hosting) {
       const c = this.server.current;
-      return { deviceId: c.deviceId, os: c.os || P.OS.WIN, role: 'guest', transport: c.transport === 'ble' ? 'ble' : 'ip', address: c.address };
+      return { deviceId: c.deviceId, os: c.os || P.OS.WIN, role: 'guest', transport: c.transport === 'ble' ? 'ble' : 'ip', address: c.address, via: Relay.viaRelay(c) ? 'relay' : '' }; // via: through a relay, its address isn't the device's
     }
     if (!this.link.authed) return null;
     const p = this.link.snapshot().paired;
-    return p && { deviceId: p.macId, os: p.os, role: 'host', transport: this.link.transport === 'ble' ? 'ble' : 'ip', address: p.address };
+    return p && { deviceId: p.macId, os: p.os, role: 'host', transport: this.link.transport === 'ble' ? 'ble' : 'ip', address: p.address, via: this.link.transport === 'relay' ? 'relay' : '' };
   }
 
   send(obj) {
@@ -235,7 +236,9 @@ class Peer {
     }
     const ws = this.link.ws;
     if (!this.link.authed || !this.link.fxToken || !ws || !this.link.pairing) return null;
-    return { host: false, token: this.link.fxToken, transport: this.link.transport, address: ws.address, port: ws.port, fp: this.link.pairing.fp, fx2: !!this.link.fx2Port, fx2Port: this.link.fx2Port, plain: this.fxPlain };
+    // Through the host's relay (link.js 'relay') ws.address is this computer's own: only its port, never fx2's or plain's.
+    const relayed = this.link.transport === 'relay';
+    return { host: false, token: this.link.fxToken, transport: this.link.transport, address: ws.address, port: ws.port, fp: this.link.pairing.fp, fx2: !relayed && !!this.link.fx2Port, fx2Port: relayed ? 0 : this.link.fx2Port, plain: relayed ? null : this.fxPlain };
   }
 
   get bufferedAmount() {

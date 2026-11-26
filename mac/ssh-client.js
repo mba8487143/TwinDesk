@@ -14,6 +14,7 @@ const { execFile, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const SshConfig = require('../shared/sshconfig.js');
+const Relay = require('../shared/relay.js');
 
 const SSH_DIR = path.join(os.homedir(), '.ssh');
 const KEY = path.join(SSH_DIR, 'macshare_ed25519');
@@ -65,6 +66,12 @@ class SshClient extends EventEmitter {
     if (ctx.transport === 'ble') {
       SshConfig.setHost(null);
       this.status = { ready: false, why: 'bluetooth', user: null };
+      return this.emit('change');
+    }
+    // Through a relay (ours or theirs): the session's address is the relay's, not the computer's.
+    if (Relay.viaRelay(ctx)) {
+      SshConfig.setHost(null);
+      this.status = { ready: false, why: 'relay', user: null };
       return this.emit('change');
     }
     const user = String(m.user || '');

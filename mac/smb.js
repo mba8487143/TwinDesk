@@ -15,6 +15,7 @@ const { execFile } = require('child_process');
 const { safeStorage, shell } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
+const Relay = require('../shared/relay.js');
 
 const SCRIPTS = path.join(__dirname, 'scripts');
 const DEFAULT_FOLDER = path.join(os.homedir(), 'MacShare'); // shared with the PC unless another is chosen
@@ -110,11 +111,22 @@ class Smb extends EventEmitter {
     return !!c && c.transport === 'ble';
   }
 
+  // The PC came through a relay (shared/relay.js): its address is the relay's, so its folder (and the
+  // password that goes with it) is never sent there.
+  get onRelay() {
+    return Relay.viaRelay(this.server.server.current);
+  }
+
   async mountPc() {
     const o = this.offer;
     if (!o || !this.cfg.connectPc || this.mount.busy) return this.emit('change');
     if (this.mount.path && fs.existsSync(this.mount.path)) return this._state({ mounted: true });
     if (this.onBle) return this.emit('change');
+    if (this.onRelay) {
+      this.mount = { path: null, error: 'Shared folders don’t go through the relay yet', busy: false };
+      this._state({ mounted: false, error: this.mount.error });
+      return this.emit('change');
+    }
     const c = this.server.server.current;
     if (c && c.address) o.host = c.address; // where the session is now (it moves off Bluetooth)
     this.mount = { path: null, error: null, busy: true };

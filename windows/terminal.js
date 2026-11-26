@@ -122,8 +122,15 @@ class Terminal {
     return !!c && c.transport === 'ble';
   }
 
+  // Through the other computer's relay (shared/relaypipe.js) ssh has no address to reach either: the
+  // session's address is the relay's port here, and the saved one is on a network we may not be on.
+  get onRelay() {
+    const c = this.link.current;
+    return !!c && c.via === 'relay';
+  }
+
   open() {
-    if (this.status !== 'ready' || this.onBle) return;
+    if (this.status !== 'ready' || this.onBle || this.onRelay) return;
     try { this._writeHost(); } catch (e) { return this._set('error', e.message); }
     const opts = { detached: true, stdio: 'ignore', windowsHide: false };
     const title = (this.link.snapshot().link.macName || 'TwinDesk').replace(/["&|<>^]/g, '');
@@ -141,6 +148,9 @@ class Terminal {
   view() {
     if (this.status === 'ready' && this.onBle) {
       return { status: 'unavailable', message: 'The terminal doesn’t work over Bluetooth. Connect with Wi-Fi Direct, or join {name}’s network.', user: this.info && this.info.user, command: 'ssh ' + SshConfig.ALIAS };
+    }
+    if (this.status === 'ready' && this.onRelay) {
+      return { status: 'unavailable', message: 'The terminal doesn’t go through the relay yet. Join {name}’s network, or use Tailscale.', user: this.info && this.info.user, command: 'ssh ' + SshConfig.ALIAS };
     }
     return { status: this.status, message: this.message, user: this.info && this.info.user, command: 'ssh ' + SshConfig.ALIAS };
   }
