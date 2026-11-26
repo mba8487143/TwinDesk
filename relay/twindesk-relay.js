@@ -10,27 +10,50 @@
 // it, change it or tell which devices they are; it never writes anything to disk.
 //
 //   node twindesk-relay.js [--port 47100] [--key <secret>] [--host 0.0.0.0]
-//   (or RELAY_PORT, RELAY_KEY, RELAY_HOST in the environment)
-// --key: only devices given the same key may use it (set it in TwinDesk with the address).
+//   (or RELAY_PORT, RELAY_KEY, RELAY_HOST in the environment; the key is best kept there, out of
+//   the process list)
+// --key: only devices given the same key may use it (set it in TwinDesk with the address). Only
+// printable ASCII without spaces counts, as in the apps (shared/relay.js cleanKey).
+// --host '::' listens on IPv6 and IPv4 too.
 // Node 16 or later; no packages. Wire: shared/relay.js.
+//
+// Limits: MAX_CONNS connections in all, MAX_PER_IP from one address (a household's devices share
+// one), MAX_HOSTS computers, MAX_WAITING joins waiting per computer for JOIN_MS. A call's number
+// is random, so only the computer it was sent to can take it. TCP keepalive on every connection:
+// one whose far end vanished (a phone's network gone) is closed instead of held for ever.
 'use strict';
 
 const net = require('net');
 const crypto = require('crypto');
 
+const VERSION = 2; // printed at start: which relay a server runs (the wire stays TDR1)
+
 const arg = (name, env, d) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 && process.argv[i + 1] ? process.argv[i + 1] : process.env[env] || d;
 };
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  console.log('TwinDesk Relay\n  node twindesk-relay.js [--port 47100] [--key <secret>] [--host 0.0.0.0]\n  Environment: RELAY_PORT, RELAY_KEY, RELAY_HOST');
+  process.exit(0);
+}
 const PORT = Number(arg('port', 'RELAY_PORT', 47100));
-const HOST = arg('host', 'RELAY_HOST', '0.0.0.0');
-const KEY = String(arg('key', 'RELAY_KEY', '')).slice(0, 128);
-const MAX_HOSTS = 1000, MAX_WAITING = 64, JOIN_MS = 15000, IDLE_MS = 180000, MAX_CONNS = 4000;
+const HOST = String(arg('host', 'RELAY_HOST', '0.0.0.0'));
+const RAW_KEY = String(arg('key', 'RELAY_KEY', ''));
+const KEY = RAW_KEY.replace(/[^\x21-\x7e]/g, '').slice(0, 128); // as the apps send it
+const MAX_HOSTS = 1000, MAX_WAITING = 64, JOIN_MS = 15000, IDLE_MS = 180000, MAX_CONNS = 4000, MAX_PER_IP = 256;
+const KEEPALIVE_MS = 30000;
+
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error(`TwinDesk Relay: the port must be a number from 1 to 65535 (got "${arg('port', 'RELAY_PORT', 47100)}")`);
+  process.exit(2);
+}
+if (KEY !== RAW_KEY) console.warn('TwinDesk Relay: the key had spaces or other characters the apps leave out (or was longer than 128); using it without them');
+if (!KEY) console.warn('TwinDesk Relay: no key set. Anyone who finds this relay can use it: set RELAY_KEY (and the same key in TwinDesk).');
 
 const hosts = new Map(); // id → control socket
 const waiting = new Map(); // id → Map(n → joiner socket)
+const perIp = new Map(); // address → connections open
 let conns = 0;
-let seq = 0;
 
 const same = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
@@ -78,7 +101,9 @@ function join(sock, id, rest) {
   if (!ctl) return sock.end('no\n');
   const list = waiting.get(id) || new Map();
   if (list.size >= MAX_WAITING) return sock.end('busy\n');
-  const n = String(++seq % 1e9);
+  // A random number (the apps take 1 to 9 digits): a guess at another's call almost never hits.
+  let n;
+  do n = String(crypto.randomInt(1, 1e9)); while (list.has(n));
   sock.pause();
   if (rest.length) sock.unshift(rest);
   list.set(n, sock);
@@ -112,11 +137,18 @@ function take(sock, id, n, rest) {
 }
 
 const server = net.createServer((sock) => {
-  if (conns >= MAX_CONNS) return sock.destroy();
+  const ip = String(sock.remoteAddress || '').replace(/^::ffff:/, '');
+  if (conns >= MAX_CONNS || (perIp.get(ip) || 0) >= MAX_PER_IP) return sock.destroy();
   conns++;
-  sock.on('close', () => { conns--; });
+  perIp.set(ip, (perIp.get(ip) || 0) + 1);
+  sock.on('close', () => {
+    conns--;
+    const left = (perIp.get(ip) || 1) - 1;
+    if (left > 0) perIp.set(ip, left); else perIp.delete(ip);
+  });
   sock.on('error', () => sock.destroy());
   sock.setNoDelay(true);
+  sock.setKeepAlive(true, KEEPALIVE_MS);
   sock.setTimeout(20000, () => sock.destroy());
   line(sock, (l, rest) => {
     const p = l.split(' ');
@@ -128,5 +160,10 @@ const server = net.createServer((sock) => {
     sock.destroy();
   });
 });
-server.on('error', (e) => { console.error(`TwinDesk Relay: ${e.message}`); process.exit(1); });
-server.listen(PORT, HOST, () => console.log(`TwinDesk Relay on ${HOST}:${PORT}${KEY ? ' (with a key)' : ''}`));
+server.on('error', (e) => {
+  console.error(`TwinDesk Relay: ${e.code === 'EADDRINUSE' ? `port ${PORT} is already in use` : e.code === 'EACCES' ? `not allowed to listen on port ${PORT}` : e.message}`);
+  process.exit(1);
+});
+server.listen(PORT, HOST, () => console.log(`TwinDesk Relay ${VERSION} on ${HOST}:${PORT}${KEY ? ' (with a key)' : ' (no key)'}`));
+// A service manager's stop (systemd): close at once; the apps reconnect when it's back.
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { server.close(); process.exit(0); });

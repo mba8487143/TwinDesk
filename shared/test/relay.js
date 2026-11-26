@@ -92,6 +92,69 @@ function client(id, key, send) {
       const t2 = await take(calls[1]);
       assert.strictEqual(t2.line, 'ok', 'the second joiner is still there to take');
       for (const x of [ctl, j2, t2.t]) x.destroy();
+      // A call's number is random (1 to 9 digits, as the apps take): not the next one in a row.
+      assert.ok(calls.every((c) => /^\d{1,9}$/.test(c)), 'call numbers the apps accept');
+      assert.ok(Math.abs(Number(calls[1]) - Number(calls[0])) !== 1, 'not one after the other');
+      // Someone guessing a number (with the key and the id) takes nothing.
+      const j3 = await dial();
+      j3.write(`TDR1 join ${rid} ${KEY}\n`);
+      const ctl2 = await dial();
+      ctl2.write(`TDR1 host ${rid} ${KEY}\n`);
+      assert.strictEqual(await rawLine(ctl2), 'ok');
+      const guess = await take('1');
+      assert.strictEqual(guess.line, 'no', 'a guessed call number is refused');
+      for (const x of [j3, ctl2, guess.t]) x.destroy();
+    }
+
+    // One address can't hold more than MAX_PER_IP (256) connections: the next is closed at once.
+    {
+      const many = [];
+      for (let i = 0; i < 256; i++) many.push(await new Promise((resolve) => { const sck = net.connect({ host: '127.0.0.1', port: PORT }, () => resolve(sck)); sck.on('error', () => {}); }));
+      const extra = await new Promise((resolve) => {
+        const sck = net.connect({ host: '127.0.0.1', port: PORT });
+        sck.on('error', () => {});
+        sck.on('close', () => resolve('closed'));
+        setTimeout(() => resolve('open'), 1000);
+      });
+      assert.strictEqual(extra, 'closed', 'one address past the limit');
+      many.forEach((x) => x.destroy());
+      await new Promise((r) => setTimeout(r, 200));
+      const again = await client(R.idOf('nobody'), KEY);
+      assert.strictEqual(again, 'no\n', 'room again once they close');
+    }
+
+    // The key as the apps send it: spaces and other characters left out on both sides.
+    {
+      const P2 = PORT + 1;
+      const r2 = spawn(process.execPath, [path.join(__dirname, '../../relay/twindesk-relay.js'), '--port', String(P2), '--host', '127.0.0.1'], { env: { ...process.env, RELAY_KEY: 'two words' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let warned = '';
+      r2.stderr.on('data', (d) => { warned += d; });
+      await new Promise((r) => r2.stdout.once('data', r));
+      const ask = (key) => new Promise((resolve) => {
+        const sck = net.connect({ host: '127.0.0.1', port: P2 }, () => sck.write(`TDR1 join ${R.idOf('k')} ${key}\n`));
+        let got = '';
+        sck.on('data', (d) => { got += d; });
+        sck.on('close', () => resolve(got));
+        sck.on('error', () => resolve(got));
+      });
+      assert.strictEqual(await ask(R.cleanKey('two words')), 'no\n', 'the key the apps send (no space) is the key');
+      assert.strictEqual(await ask('wrong'), 'key\n');
+      assert.match(warned, /key had spaces/, 'and it says so at start');
+      r2.kill();
+    }
+    // Without a key it warns; a bad port stops with a message.
+    {
+      const out = require('child_process').spawnSync(process.execPath, [path.join(__dirname, '../../relay/twindesk-relay.js'), '--port', 'abc'], { encoding: 'utf8', env: { ...process.env, RELAY_KEY: '' } });
+      assert.strictEqual(out.status, 2);
+      assert.match(out.stderr, /port must be a number/);
+      const P3 = PORT + 2;
+      const r3 = spawn(process.execPath, [path.join(__dirname, '../../relay/twindesk-relay.js'), '--port', String(P3), '--host', '127.0.0.1'], { env: { ...process.env, RELAY_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let err3 = '';
+      r3.stderr.on('data', (d) => { err3 += d; });
+      const line3 = await new Promise((r) => r3.stdout.once('data', (d) => r(String(d))));
+      assert.match(line3, /\(no key\)/);
+      assert.match(err3, /no key set/);
+      r3.kill();
     }
     console.log('relay: ok');
   } finally {
