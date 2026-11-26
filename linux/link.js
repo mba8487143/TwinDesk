@@ -5,9 +5,13 @@
 // same WSS over a 127.0.0.1 pipe. Once discovery sees the host on the network, a second socket
 // takes the session over (hello {resume}); the Bluetooth one stays as the fallback (alt), carrying
 // the session again if the network goes. A move that doesn't last is tried again later and later (resumeBackoff).
+// A host that isn't seen on this network and told us its own relay (welcome {relay}): every other
+// attempt goes through it (shared/relaypipe.js), the same WSS over a 127.0.0.1 port ('relay'), and
+// moves to the network the same way once discovery sees the host.
 const WebSocket = require('ws');
 const P = require('../shared/protocol.js');
 const Tailnet = require('../shared/tailnet.js'); // away from its network: its Tailscale address (#161)
+const RelayPipe = require('../shared/relaypipe.js'); // away from its network: its own relay
 const Quiet = require('../shared/quiet.js'); // idle sessions stop pinging every second (#143)
 const { PairLimit, versionMessage } = require('../shared/pairlimit.js');
 
@@ -18,6 +22,8 @@ const HELLO_TIMEOUT_MS = P.HELLO_TIMEOUT_MS; // no `welcome` this long after hel
 const RESUME_RETRY_MS = 5000; // a failed move to the network: try again after this
 const RESUME_LASTED_MS = 60000; // a move that held this long worked: the next one is tried at once
 const RESUME_MAX_MS = 5 * 60000; // … else each wait doubles, up to this
+const RELAY_HANDSHAKE_MS = 10000; // TLS through the relay and back: a far one takes longer than the network
+const via = (t) => (t === 'ble' ? 'Bluetooth' : t === 'relay' ? 'the relay' : 'the network');
 const isBle = (a) => String(a || '').startsWith('ble:');
 
 const PAIR_ERRORS = {
@@ -38,7 +44,9 @@ class Link {
     this.store = opts.store;
     this.resolveAddress = opts.resolveAddress;
     this.ble = opts.ble || null;
-    this.transport = 'ip'; // the session's socket: 'ip' | 'ble'
+    this.transport = 'ip'; // the session's socket: 'ip' | 'ble' | 'relay'
+    this.relayTurn = false; // not seen here: every other attempt through the host's relay
+    this.dialRelay = false; // this attempt goes through it (_scheduleReconnect → _connect)
     this.alt = null; // its other socket after a move (the fallback)
     this.pending = null; // a socket moving the session (hello {resume})
     this.resumeKey = '';
@@ -180,6 +188,8 @@ class Link {
   // ---- connection ----
 
   _connect(mode) {
+    const relayNow = this.dialRelay; // set for one attempt only (_scheduleReconnect)
+    this.dialRelay = false;
     this._closeSocket();
     clearTimeout(this.timers.reconnect);
     if (mode === 'session' && this.blocked()) return this._scheduleReconnect(); // hosting: try again later
@@ -187,6 +197,7 @@ class Link {
     this.nw = this.nm = null;
     let target = mode === 'pair' ? this.pairState : this.pairing;
     if (mode === 'session' && this.dialAt) target = { ...target, address: this.dialAt }; // this attempt only (Tailnet.pick)
+    const viaRelay = mode === 'session' && relayNow && !this.dialAt && !!RelayPipe.info(this.pairing.relay);
     this.dialAt = '';
     const seq = ++this.seq;
     // Bluetooth: a host met there (pairing), or a paired one that isn't on the network but is near.
@@ -195,6 +206,7 @@ class Link {
     // Mouse and keyboard over Bluetooth (shared/bleinput.js): through it first even on the same network,
     // so the session keeps it beside the network one once it moves there.
     const viaBle = isBle(target.address) || (mode === 'session' && near && (!this.resolveAddress(hostId) || !!this.bleInput));
+    if (!viaBle && viaRelay) return this._openRelay(seq);
     if (!viaBle) return this._open(target.address, target.port, 'ip');
     if (!near) {
       this.lastError = '{Name} isn’t nearby';
@@ -210,8 +222,29 @@ class Link {
     });
   }
 
-  _open(address, port, transport) {
+  // Through the host's own relay: a port here once the host took the first connection, then the usual
+  // WSS to it (its certificate pinned as always). The pipe goes with the socket that uses it.
+  _openRelay(seq) {
+    const r = RelayPipe.info(this.pairing.relay);
+    this.ws = { readyState: WebSocket.CONNECTING, terminate: () => {}, close: () => {}, bufferedAmount: 0 }; // opening the pipe
+    console.log('[link] not on this network: through its relay ' + r.addr);
+    RelayPipe.RelayPipe.open(r).then((pipe) => {
+      if (seq !== this.seq) return pipe.destroy(); // cancelled, or another attempt meanwhile
+      this._open('127.0.0.1', pipe.port, 'relay', pipe);
+    }, (e) => {
+      if (seq !== this.seq) return;
+      this.lastError = RelayPipe.message(e);
+      console.log('[link] relay: ' + this.lastError + (e.detail ? ' (' + e.detail + ')' : ''));
+      this._onClose();
+    });
+  }
+
+  _open(address, port, transport, pipe = null) {
     const ws = this._socket(address, port, transport);
+    if (pipe) {
+      ws.relayPipe = pipe;
+      ws.on('close', () => pipe.close()); // file transfers already going through it finish
+    }
     this.ws = ws;
     ws.on('open', () => ws === this.ws && this._onOpen(ws.fp));
     ws.on('close', (code, reason) => this._socketClosed(ws, code, String(reason || '')));
@@ -222,7 +255,7 @@ class Link {
     const ws = new WebSocket('wss://' + address + ':' + port, {
       rejectUnauthorized: false, // self-signed; we pin the fingerprint instead
       maxPayload: P.MAX_PAYLOAD,
-      handshakeTimeout: transport === 'ble' ? P.BLE_TIMEOUT_MS : 5000,
+      handshakeTimeout: transport === 'ble' ? P.BLE_TIMEOUT_MS : transport === 'relay' ? RELAY_HANDSHAKE_MS : 5000,
     });
     Object.assign(ws, { transport, fp: '', lastRx: Date.now(), address, port });
     ws.on('upgrade', (res) => {
@@ -242,7 +275,7 @@ class Link {
 
   _socketClosed(ws, code, reason) {
     if (this.authed && (ws === this.ws || ws === this.alt)) { // which path went, and how (1006: the connection dropped)
-      console.log(`[link] ${ws === this.alt ? 'fallback' : 'session'} socket on ${ws.transport === 'ble' ? 'Bluetooth' : 'the network'} closed (${code || '?'}${reason ? ` ${reason}` : ''})${this.lastError ? `: ${this.lastError}` : ''}`);
+      console.log(`[link] ${ws === this.alt ? 'fallback' : 'session'} socket on ${via(ws.transport)} closed (${code || '?'}${reason ? ` ${reason}` : ''})${this.lastError ? `: ${this.lastError}` : ''}`);
     }
     if (ws === this.pending) {
       this.pending = null;
@@ -264,15 +297,15 @@ class Link {
       this.alt = null;
       this.ws = alt;
       this.transport = alt.transport;
-      console.log('[link] back on ' + (alt.transport === 'ble' ? 'Bluetooth' : 'the network'));
+      console.log('[link] back on ' + via(alt.transport));
       return this._emit('transport', {});
     }
     this._onClose();
   }
 
-  // On Bluetooth and the host is on the network now: move the session there.
+  // On Bluetooth or the relay and the host is on the network now: move the session there.
   _tryResume() {
-    if (!this.authed || this.transport !== 'ble' || this.pending || !this.resumeKey || Date.now() < (this.resumeAt || 0)) return;
+    if (!this.authed || (this.transport !== 'ble' && this.transport !== 'relay') || this.pending || !this.resumeKey || Date.now() < (this.resumeAt || 0)) return;
     const seen = this.resolveAddress(this.pairing.macId);
     if (!seen || isBle(seen.address)) return;
     const ws = this._socket(seen.address, seen.port, 'ip');
@@ -328,6 +361,13 @@ class Link {
     }
     if (!seenFp || seenFp !== this.pairing.fp) {
       this._closeSocket();
+      // Through the relay that only says another computer answered for this id (anyone with the
+      // relay's key can): not the host changing. Its certificate kept it out; try again as usual.
+      if (this.transport === 'relay') {
+        this.lastError = 'Another computer answered on the relay';
+        console.log('[link] relay: another computer answered for this host (certificate didn’t match)');
+        return this._scheduleReconnect();
+      }
       this._setStatus('identity_changed', 'This Mac looks different now. Forget it and pair again.');
       return;
     }
@@ -336,7 +376,10 @@ class Link {
 
   _hello() {
     const p = this.pairing;
-    this._raw({ t: T.HELLO, v: P.PROTOCOL_VERSION, id: this.device.id, name: this.device.name, os: P.OS.LINUX, token: p.token, fx: 1, ...(this.fx2Hello && this.fx2Hello() ? { fx2: 1 } : {}), ...(this.fxPlainHello ? this.fxPlainHello() : {}), ...(this.ilHello && this.transport === 'ip' && this.ilHello() ? { il: this.ilHello() } : {}), ...(this.takeover ? { takeover: true } : {}) });
+    // Through the relay only what goes through its port: fast files (fx) do; fx2, unencrypted transfers
+    // and the input lane use other ports or UDP to the host's address, which here is this computer's own.
+    const relayed = this.transport === 'relay';
+    this._raw({ t: T.HELLO, v: P.PROTOCOL_VERSION, id: this.device.id, name: this.device.name, os: P.OS.LINUX, token: p.token, fx: 1, ...(!relayed && this.fx2Hello && this.fx2Hello() ? { fx2: 1 } : {}), ...(!relayed && this.fxPlainHello ? this.fxPlainHello() : {}), ...(this.ilHello && this.transport === 'ip' && this.ilHello() ? { il: this.ilHello() } : {}), ...(this.takeover ? { takeover: true } : {}) });
     this.timers.hello = setTimeout(() => {
       this.lastError = 'No welcome from {name}';
       if (this.ws) this.ws.terminate();
@@ -416,6 +459,7 @@ class Link {
     this.attempt = 0;
     const tail = Tailnet.clean(msg.tail); // its Tailscale addresses (none: older, or not on it)
     if (!Tailnet.same(tail, this.pairing.tail) && (tail.length || this.pairing.tail)) { this.pairing.tail = tail; this.store.save(this.pairing); }
+    this._keepRelay(msg);
     this.resumeKey = typeof msg.resume === 'string' ? msg.resume : ''; // older hosts: none, no moving
     this.fxToken = typeof msg.fx === 'string' && /^[0-9a-f]{32}$/.test(msg.fx) ? msg.fx : ''; // fast files (shared/fastfile.js); older hosts: none
     this.fx2Port = msg.fx2 && typeof msg.fx2 === 'object' && Number.isInteger(msg.fx2.port) && msg.fx2.port > 0 && msg.fx2.port < 65536 ? msg.fx2.port : 0; // fast files v2 (shared/fx2.js); older hosts: none
@@ -549,8 +593,25 @@ class Link {
       // Not seen here: every other attempt through Tailscale, when both are on it.
       const at = Tailnet.pick({ address: this.pairing.address, seen, tail: this.pairing.tail, attempt: this.attempt });
       this.dialAt = at !== this.pairing.address ? at : '';
+      // Not seen here either way: every other one of the rest through the host's own relay, if it has one.
+      this.dialRelay = !this.dialAt && !seen && this._relayTurn();
       this._connect('session');
     }, delay);
+  }
+
+  _relayTurn() {
+    if (!RelayPipe.info(this.pairing && this.pairing.relay)) return (this.relayTurn = false);
+    return (this.relayTurn = !this.relayTurn);
+  }
+
+  // welcome {relay}: the host's own relay ({addr, key, id}), or null for none now; absent (an older
+  // host): what we had stays. Kept with the pairing, for reconnecting away from the host's network.
+  _keepRelay(msg) {
+    if (!msg || !Object.prototype.hasOwnProperty.call(msg, 'relay')) return;
+    const r = RelayPipe.info(msg.relay);
+    if (RelayPipe.same(r, RelayPipe.info(this.pairing.relay))) return;
+    if (r) this.pairing.relay = r; else delete this.pairing.relay;
+    this.store.save(this.pairing);
   }
 
   _closeSocket() {

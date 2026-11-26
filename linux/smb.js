@@ -227,6 +227,10 @@ smbcontrol all reload-config 2>/dev/null || true
     const uri = this._uri();
     if (!m || !uri || this.busy) return;
     if (!/^[\w.$ -]+$/.test(m.share)) return this._state(m.share, false, 'Bad share name');
+    // Through the other computer's relay: its saved address may be on a network we aren't on, and the
+    // password would go to whoever has that address here. Not until the session is on its network.
+    const c = this.link.current;
+    if (c && c.via === 'relay') return this._state(m.share, false, 'Shared folders don’t go through the relay yet');
     this._busy('mount');
     try {
       let local = await localPath(uri);

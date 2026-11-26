@@ -102,7 +102,12 @@ class Peer extends EventEmitter {
   _fxSession() {
     const c = this.current;
     if (!c || !c.fx) return null;
-    if (c === this.link.ctx) return { host: false, token: c.fx, transport: 'ip', address: this.link.address, port: this.link.host.port, fp: this.link.host.fp, fx2: !!c.fx2Port, fx2Port: c.fx2Port, plain: FastFiles.parsePlain({ fxPlain: c.fxPlainMsg }) };
+    if (c === this.link.ctx) {
+      // Through the host's relay (link.js dial): its pipe's port here, never fx2's or plain's.
+      const d = this.link.dial;
+      if (d) return { host: false, token: c.fx, transport: 'ip', address: d.address, port: d.port, fp: this.link.host.fp, fx2: false, fx2Port: 0, plain: null };
+      return { host: false, token: c.fx, transport: 'ip', address: this.link.address, port: this.link.host.port, fp: this.link.host.fp, fx2: !!c.fx2Port, fx2Port: c.fx2Port, plain: FastFiles.parsePlain({ fxPlain: c.fxPlainMsg }) };
+    }
     return { host: true, token: c.fx, plainToken: c.fxPlain || '', transport: c.transport, address: c.address, fx2: !!c.fx2 };
   }
 

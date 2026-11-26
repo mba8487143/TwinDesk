@@ -1,6 +1,7 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Your own relay (General › Your own relay): a server you run (relay/twindesk-relay.js, on any
-// machine both can reach) that a phone away from this computer's network connects through. Off
+// machine both can reach) that a phone or computer away from this computer's network connects
+// through (a computer: shared/relaypipe.js). Off
 // until an address is added; nothing else changes:
 //   - The relay only pairs two connections and copies bytes. The session inside is the same TLS
 //     with the pinned certificate and the same token as on the local network, so the relay sees
@@ -162,20 +163,45 @@ class RelayHost extends EventEmitter {
     s.on('error', (e) => fail(e.code === 'ECONNREFUSED' ? 'Nothing answers at that address' : e.code === 'ENOTFOUND' ? 'No such address' : e.message));
   }
 
-  // A phone asked: a connection of its own, handed to the session's server once spliced.
+  // A phone or computer asked: a connection of its own, handed to the session's server once spliced.
+  // Marked (isRelayed): its address is the relay's, not the device's, so nothing dials back to it.
   _take(n) {
     const s = net.connect({ host: this.to.host, port: this.to.port });
     s.setNoDelay(true);
+    s.tdRelay = true;
     s.once('connect', () => s.write(`TDR1 take ${this.id} ${n} ${this.key}\n`));
     s.on('error', () => s.destroy());
     readLine(s, TAKE_MS, (err, line, rest) => {
       if (err || line !== 'ok' || !this.server || !this.server.https) return s.destroy();
       if (rest.length) s.unshift(rest);
+      mark(s);
       this.server.https.emit('connection', s);
       this.emit('relayed');
     });
   }
 }
+
+// The connections the relay handed to this computer's server, by their far end (the relay's address
+// and port, the same for all of them): isRelayed() for a socket the server wraps (TLS) as well.
+const marked = new Map(); // "address|port" → count open
+const keyOf = (s) => `${String(s.remoteAddress || '').replace(/^::ffff:/, '')}|${s.remotePort}`;
+function mark(s) {
+  const k = keyOf(s);
+  marked.set(k, (marked.get(k) || 0) + 1);
+  s.once('close', () => {
+    const left = (marked.get(k) || 1) - 1;
+    if (left > 0) marked.set(k, left); else marked.delete(k);
+  });
+}
+function isRelayed(sock) {
+  if (!sock) return false;
+  if (sock.tdRelay || (sock._parent && sock._parent.tdRelay)) return true;
+  return marked.size > 0 && marked.has(keyOf(sock));
+}
+// A session through a relay, either side: the server's (its socket came through ours, server.js
+// ws.relayed) or a link's (it dialled the other computer's, mac/link.js ctx.via). Its address can't
+// be dialled for anything else (shared folders, the terminal).
+const viaRelay = (ctx) => !!ctx && (ctx.via === 'relay' || (!!ctx.ws && ctx.ws.relayed === true));
 
 // What the computer tells a device it pairs with (welcome.relay): set by the app (use()).
 let current = () => null;
@@ -211,4 +237,4 @@ function apply({ server, fp, relay, onState = () => {} }) {
 }
 const view = () => (host ? { ...host.view, addr: host.to ? `${host.to.host}:${host.to.port}` : '' } : { state: 'off', error: '', addr: '' });
 
-module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, DEFAULT_PORT };
+module.exports = { RelayHost, parseAddr, idOf, cleanKey, clean, readLine, use, welcome, apply, view, isRelayed, viaRelay, DEFAULT_PORT };

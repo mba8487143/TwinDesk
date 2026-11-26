@@ -2,6 +2,10 @@
 // Guest role: this Mac connects to another Mac that hosts.
 // WSS client with certificate pinning, pairing as the initiator, hello, liveness, reconnect.
 // Same protocol as windows/link.js; stored hosts live in hosts.json.
+// A host that isn't seen on this network and told us its own relay (welcome {relay}, kept as
+// host.relay): every other attempt goes through it (shared/relaypipe.js), the same WSS over a
+// 127.0.0.1 port. The session's address stays the host's own (ctx.address: the terminal, shared
+// folders); only fast files use the port (this.dial).
 //
 // Events: 'change' — status/pairing changed; 'welcome' (msg); 'closed'; 'message' (msg); 'rtt'.
 'use strict';
@@ -10,11 +14,13 @@ const WebSocket = require('ws');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const Tailnet = require('../shared/tailnet.js');
+const RelayPipe = require('../shared/relaypipe.js');
 const Quiet = require('../shared/quiet.js'); // idle sessions stop pinging every second (#143)
 const { PairLimit, versionMessage } = require('../shared/pairlimit.js');
 const store = require('./store');
 
 const T = P.T;
+const RELAY_HANDSHAKE_MS = 10000; // TLS through the relay and back: a far one takes longer than the network
 const PAIR_ERRORS = {
   [P.E.PAIR_REFUSED]: 'Pairing was refused.',
   [P.E.PAIR_TIMEOUT]: 'Pairing timed out.',
@@ -38,6 +44,10 @@ class Link extends EventEmitter {
     this.host = null; // the stored host we are connected/connecting to
     this.ctx = null; // peer context while authed
     this.attempt = 0;
+    this.seq = 0; // connection attempts: a relay pipe that opens late is dropped
+    this.relayTurn = false; // not seen here: every other attempt through the host's relay
+    this.via = 'ip'; // the session's socket: 'ip' | 'relay'
+    this.dial = null; // through the relay: {address, port} of its pipe here (fast files); else null
     // Disconnect here, or the host let us go / another device took over: no reconnecting by itself
     // until connect(). {why: 'local' | released | replaced, message}
     this.stopped = null;
@@ -142,25 +152,51 @@ class Link extends EventEmitter {
   }
 
   // at: another address for this attempt (its Tailscale one, shared/tailnet.js); the host's stays.
-  _connect(mode, host, at = '') {
+  // pipe: through the host's relay (_connectRelay), the port to dial here; the session's address stays the host's.
+  _connect(mode, host, at = '', pipe = null) {
     this._closeSocket();
     clearTimeout(this.timers.reconnect);
     this.mode = mode;
     this.host = host || null;
     this.nw = this.nm = null;
-    const target = mode === 'pair' ? this.pairState : { ...host, address: at || host.address };
+    const target = mode === 'pair' ? this.pairState : pipe ? { ...host, address: '127.0.0.1', port: pipe.port } : { ...host, address: at || host.address };
     const ws = new WebSocket(`wss://${target.address.includes(':') ? `[${target.address}]` : target.address}:${target.port}`, {
       rejectUnauthorized: false, // self-signed; the fingerprint is pinned instead
       maxPayload: P.MAX_PAYLOAD,
-      handshakeTimeout: 5000,
+      handshakeTimeout: pipe ? RELAY_HANDSHAKE_MS : 5000,
     });
     this.ws = ws;
+    this.via = pipe ? 'relay' : 'ip';
+    this.dial = pipe ? { address: '127.0.0.1', port: pipe.port } : null;
+    if (pipe) ws.on('close', () => pipe.close()); // file transfers already going through it finish
     let seenFp = '';
     ws.on('upgrade', (res) => { seenFp = P.normFingerprint(res.socket.getPeerCertificate().fingerprint256); });
-    ws.on('open', () => ws === this.ws && this._onOpen(seenFp, target.address));
+    ws.on('open', () => ws === this.ws && this._onOpen(seenFp, pipe ? host.address : target.address));
     ws.on('message', (data, isBinary) => ws === this.ws && !isBinary && this._onMessage(String(data)));
     ws.on('error', (err) => { if (ws === this.ws) this.lastError = err.code || err.message; });
     ws.on('close', () => ws === this.ws && this._onClose());
+  }
+
+  // Through the host's own relay: a port here once the host took the first connection, then the usual
+  // WSS to it (_connect with the pipe; its certificate pinned as always).
+  _connectRelay(host) {
+    this._closeSocket();
+    clearTimeout(this.timers.reconnect);
+    const seq = this.seq;
+    const r = RelayPipe.info(host.relay);
+    this.mode = 'session';
+    this.host = host;
+    this.ws = { readyState: WebSocket.CONNECTING, terminate: () => {}, close: () => {} }; // opening the pipe
+    console.log(`[link] ${host.name} isn’t on this network: through its relay ${r.addr}`);
+    RelayPipe.RelayPipe.open(r).then((pipe) => {
+      if (seq !== this.seq) return pipe.destroy(); // cancelled, or another attempt meanwhile
+      this._connect('session', host, '', pipe);
+    }, (e) => {
+      if (seq !== this.seq) return;
+      this.lastError = RelayPipe.message(e, host.name);
+      console.log(`[link] relay: ${this.lastError}${e.detail ? ` (${e.detail})` : ''}`);
+      this._onClose();
+    });
   }
 
   _onOpen(seenFp, address) {
@@ -176,13 +212,23 @@ class Link extends EventEmitter {
     }
     if (!seenFp || seenFp !== this.host.fp) {
       this._closeSocket();
+      // Through the relay that only says another computer answered for this id (anyone with the
+      // relay's key can): not the host changing. Its certificate kept it out; try again as usual.
+      if (this.via === 'relay') {
+        this.lastError = 'Another computer answered on the relay';
+        console.log(`[link] relay: another computer answered for ${this.host.name} (certificate didn’t match)`);
+        return this._scheduleReconnect();
+      }
       return this._setStatus('identity_changed', `${this.host.name} looks different now. Forget it and pair again.`);
     }
     this._hello();
   }
 
   _hello() {
-    this._raw({ t: T.HELLO, v: P.PROTOCOL_VERSION, id: this.id.macId, name: this.id.macName, os: P.OS.MAC, token: this.host.token, fx: 1, ...(this.fx2Hello && this.fx2Hello() ? { fx2: 1 } : {}), ...(this.fxPlainHello ? this.fxPlainHello() : {}), ...this._ilHello(), ...(this.takeover ? { takeover: true } : {}) });
+    // Through the relay only what goes through its port: fast files (fx) do; fx2, unencrypted transfers
+    // and the input lane use other ports or UDP to the host's address, which the relay doesn't carry.
+    const relayed = this.via === 'relay';
+    this._raw({ t: T.HELLO, v: P.PROTOCOL_VERSION, id: this.id.macId, name: this.id.macName, os: P.OS.MAC, token: this.host.token, fx: 1, ...(!relayed && this.fx2Hello && this.fx2Hello() ? { fx2: 1 } : {}), ...(!relayed && this.fxPlainHello ? this.fxPlainHello() : {}), ...(relayed ? {} : this._ilHello()), ...(this.takeover ? { takeover: true } : {}) });
     this.timers.hello = setTimeout(() => {
       this.lastError = 'No answer';
       if (this.ws) this.ws.terminate();
@@ -272,11 +318,12 @@ class Link extends EventEmitter {
     if (typeof msg.macName === 'string' && msg.macName) h.name = msg.macName.slice(0, 64);
     const tail = Tailnet.clean(msg.tail); // its Tailscale addresses, for away from its network
     if (tail.length || msg.tail) h.tail = tail;
+    this._keepRelay(h, msg);
     h.lastSeen = Date.now();
     this._save();
     this.ctx = {
       ws: this.ws, authed: true, deviceId: h.id, name: h.name, os: msg.os || P.OS.MAC, role: 'host',
-      address: this.address, lastRx: Date.now(), rttMs: null,
+      address: this.address, lastRx: Date.now(), rttMs: null, via: this.via, // via 'relay': through the host's own relay
       fx: typeof msg.fx === 'string' && /^[0-9a-f]{32}$/.test(msg.fx) ? msg.fx : '', // fast files (shared/fastfile.js); older hosts: none
       il: msg.il && typeof msg.il === 'object' ? msg.il : null, // the input lane (shared/inputlane.js); older hosts: none
       fx2Port: msg.fx2 && typeof msg.fx2 === 'object' && Number.isInteger(msg.fx2.port) && msg.fx2.port > 0 && msg.fx2.port < 65536 ? msg.fx2.port : 0, // fast files v2 (shared/fx2.js); older hosts: none
@@ -385,13 +432,31 @@ class Link extends EventEmitter {
       }
       this._setStatus('connecting', this.lastError || '');
       // Not seen here: every other attempt through Tailscale, when both are on it (#161).
-      this._connect('session', seen, Tailnet.pick({ address: seen.address, seen: at, tail: seen.tail, attempt: this.attempt }));
+      const tailAt = Tailnet.pick({ address: seen.address, seen: at, tail: seen.tail, attempt: this.attempt });
+      // Not seen here either way: every other one of the rest through the host's own relay, if it has one.
+      if (!at && tailAt === seen.address && this._relayTurn(seen)) return this._connectRelay(seen);
+      this._connect('session', seen, tailAt);
     }, d);
+  }
+
+  _relayTurn(host) {
+    if (!RelayPipe.info(host && host.relay)) return (this.relayTurn = false);
+    return (this.relayTurn = !this.relayTurn);
+  }
+
+  // welcome {relay}: the host's own relay ({addr, key, id}), or null for none now; absent (an older
+  // host): what we had stays. Kept with the host (hosts.json), for reconnecting away from its network.
+  _keepRelay(h, msg) {
+    if (!msg || !Object.prototype.hasOwnProperty.call(msg, 'relay')) return;
+    const r = RelayPipe.info(msg.relay);
+    if (RelayPipe.same(r, RelayPipe.info(h.relay))) return;
+    if (r) h.relay = r; else delete h.relay;
   }
 
   _closeSocket() {
     const ws = this.ws;
     this._clearSocketTimers();
+    this.seq++;
     this.ws = null;
     this._dropSession();
     if (!ws) return;
